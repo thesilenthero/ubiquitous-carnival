@@ -1,0 +1,20 @@
+# The database holds the real job search — applications, salaries, contacts.
+# Never commit it. Timestamped copies live in data/backups/.
+data/
+job_files/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.streamlit/
+
+# Node — at every level, not just web/
+node_modules/
+
+# Build output
+web/dist/
+web/tsconfig.tsbuildinfo
+
+# macOS
+.DS_Store
