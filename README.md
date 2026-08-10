@@ -253,12 +253,22 @@ same public no-auth APIs as the autofill above, so a refresh costs nothing and
 involves no model.
 
 **Keywords are not optional in practice.** Bosch publishes ~4,700 openings; a
-single unfiltered employer buries everything else. Each board carries a
-comma-separated title filter, matched case-insensitively. Workday and
-SmartRecruiters also accept a server-side search term (the board's first
-keyword) so they fetch less to begin with — but that term matches loosely
-(`q=data analyst` on Bosch still returns ~1,000), so the local filter is the
-authoritative one.
+single unfiltered employer buries everything else. How a board is narrowed
+depends on what its ATS supports, and that decision lives in
+`postings.list_board`:
+
+- **Workday and SmartRecruiters** run a real search over the whole posting —
+  the same engine their careers sites use. The board is queried **once per
+  keyword** and the results unioned, then stored as-is. They are deliberately
+  *not* re-filtered on title: a CIBC search for `analytics` returns 41 roles of
+  which only 6 carry the word in the title, and "Senior Analyst, Data &
+  Reporting" is a real hit. Counts match what the employer's own site shows.
+- **Greenhouse, Lever, and Ashby** have no search parameter, so the whole board
+  is fetched and matched on **title only**. That is all their list endpoints
+  expose, and it is genuinely narrower — a role whose title omits your keyword
+  will be missed there.
+
+`MAX_PER_BOARD` caps what one board can contribute regardless of strategy.
 
 `discovered_jobs` is the app's **pre-application state**, and has to be its own
 table: `applications.date_applied` is `NOT NULL` and `applied` is the floor of
@@ -282,8 +292,16 @@ Two design notes:
 
 Per-board failures are recorded in `last_error` and reported in the refresh
 summary, but never abort the batch: one dead slug can't stop the rest ingesting.
-Workday additionally needs its own page size — it rejects `limit > 20` with a
-bare HTTP 400 and no message.
+
+Two Workday quirks worth knowing, both of which silently truncated results
+before they were found:
+
+> It rejects `limit > 20` with a bare HTTP 400 and no message, so paging is
+> configured per-ATS in `PAGING`.
+>
+> It reports `total` on the **first page only** — every later page returns
+> `total: 0`. A loop that re-reads `total` each page therefore stops after two
+> pages and caps every board at 40 postings. `_list_workday` captures it once.
 
 ### Dormant AI endpoints
 

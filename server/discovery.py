@@ -112,16 +112,6 @@ def delete_board(conn: sqlite3.Connection, board_id: str) -> bool:
 # --- Refresh --------------------------------------------------------------
 
 
-def _matches(title: str, keywords: str) -> bool:
-    """Case-insensitive substring match against any keyword. No keywords keeps
-    everything — which is only sane for a small board."""
-    terms = [k.strip().lower() for k in (keywords or "").split(",") if k.strip()]
-    if not terms:
-        return True
-    low = title.lower()
-    return any(t in low for t in terms)
-
-
 def refresh_boards(conn: sqlite3.Connection) -> dict:
     """Poll every active board and store postings whose title matches.
 
@@ -133,12 +123,11 @@ def refresh_boards(conn: sqlite3.Connection) -> dict:
     errors: list[str] = []
 
     for board in boards:
-        keywords = board["keywords"]
-        # Give a searchable ATS the first keyword as a server-side hint so it
-        # returns less; the local filter below is still authoritative.
-        term = next((k.strip() for k in keywords.split(",") if k.strip()), "")
+        # Narrowing is entirely list_board's job: which strategy applies is ATS
+        # knowledge (a searchable board queries every keyword server-side; the
+        # rest are matched on title). Re-filtering here would undo that.
         try:
-            rows = postings.list_board(board, term)
+            rows = postings.list_board(board, board["keywords"])
         except Exception as e:  # noqa: BLE001 — one bad board must not stop the rest
             message = getattr(e, "message", None) or str(e)
             errors.append(f"{board['company']}: {message}")
@@ -149,8 +138,6 @@ def refresh_boards(conn: sqlite3.Connection) -> dict:
             continue
 
         for r in rows:
-            if not _matches(r["roleTitle"], keywords):
-                continue
             cur = conn.execute(
                 """INSERT INTO discovered_jobs
                    (id, board_id, external_id, job_url, company, role_title,

@@ -425,6 +425,10 @@ def _list_workday(board: dict, term: str) -> list[dict]:
     base = f"https://{host}/wday/cxs/{tenant}/{site}"
     size, max_pages = PAGING["workday"]
     out = []
+    # Workday reports `total` on the FIRST page only; every later page returns
+    # total: 0. Comparing against it each time broke the loop after two pages
+    # and silently truncated every board to 40 postings, so it is captured once.
+    total = None
     for page in range(max_pages):
         data = _post_json(
             f"{base}/jobs",
@@ -435,6 +439,8 @@ def _list_workday(board: dict, term: str) -> list[dict]:
                 "searchText": term,
             },
         )
+        if total is None:
+            total = data.get("total") or 0
         batch = data.get("jobPostings") or []
         for j in batch:
             path = j.get("externalPath") or ""
@@ -449,7 +455,7 @@ def _list_workday(board: dict, term: str) -> list[dict]:
                     "postedAt": j.get("postedOn"),
                 }
             )
-        if len(batch) < size or len(out) >= data.get("total", 0):
+        if len(batch) < size or (total and len(out) >= total):
             break
     return out
 
@@ -550,24 +556,63 @@ _LISTERS = {
     "ashby": _list_ashby,
 }
 
-# Only these two accept a server-side search term, so they fetch less to begin
-# with. The rest are filtered after fetch, in server/discovery.py.
+# Workday and SmartRecruiters run a real search over the whole posting — the
+# same engine their careers sites use. The rest have no search parameter at all,
+# so their boards are fetched whole and matched on title here.
 SEARCHABLE = {"workday", "smartrecruiters"}
 
+# Ceiling on stored postings per board, whichever strategy is used. A broad
+# keyword set across a huge employer should degrade to "a lot" and not "all".
+MAX_PER_BOARD = 400
 
-def list_board(board: dict, term: str = "") -> list[dict]:
-    """List a company board's open postings, normalised.
+
+def _title_matches(title: str, terms: list[str]) -> bool:
+    low = title.lower()
+    return any(t in low for t in terms)
+
+
+def list_board(board: dict, keywords: str = "") -> list[dict]:
+    """List a board's open postings, already narrowed by `keywords`.
+
+    Filtering lives here rather than in the caller because *how* to narrow is
+    ATS knowledge:
+
+    - **Searchable boards** (Workday, SmartRecruiters) are queried once per
+      keyword and the results unioned. Their search covers the whole posting,
+      so the results are NOT re-filtered on title afterwards — doing that was a
+      bug that threw away most of what the board correctly matched (a CIBC
+      search for "analytics" returns 41 roles, of which only 6 carry the word
+      in their title; "Senior Analyst, Data & Reporting" is a real hit).
+    - **Everything else** has no search parameter, so the whole board is
+      fetched and matched on title. That is all their list endpoints expose.
 
     Returns dicts with externalId / jobUrl / roleTitle and optionally location,
-    remote, salaryMin, salaryMax, postedAt. `roleType` is derived here so every
-    ATS gets it for free.
+    remote, salaryMin, salaryMax, postedAt, plus a derived roleType.
     """
-    lister = _LISTERS.get(board.get("ats"))
+    ats = board.get("ats")
+    lister = _LISTERS.get(ats)
     if lister is None:
-        raise FetchError(f"Unsupported board type: {board.get('ats')}", status=400)
-    rows = lister(board, term if board.get("ats") in SEARCHABLE else "")
+        raise FetchError(f"Unsupported board type: {ats}", status=400)
+
+    terms = [k.strip().lower() for k in (keywords or "").split(",") if k.strip()]
+
+    if ats in SEARCHABLE and terms:
+        rows, seen = [], set()
+        for term in terms:
+            for r in lister(board, term):
+                key = r.get("externalId")
+                if key and key not in seen:
+                    seen.add(key)
+                    rows.append(r)
+            if len(rows) >= MAX_PER_BOARD:
+                break
+    else:
+        rows = lister(board, "")
+        if terms:
+            rows = [r for r in rows if _title_matches(r.get("roleTitle") or "", terms)]
+
     out = []
-    for r in rows:
+    for r in rows[:MAX_PER_BOARD]:
         if not r.get("roleTitle") or not r.get("jobUrl") or not r.get("externalId"):
             continue
         r["roleType"] = classify_role_type(r["roleTitle"])
