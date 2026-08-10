@@ -111,6 +111,55 @@ SCHEMA = """
       created_at      TEXT NOT NULL
     );
 
+    -- Company ATS boards being watched for new postings. Board identity is not
+    -- one field for every ATS: Workday has no shared API host (each tenant is
+    -- {tenant}.wd{N}.myworkdayjobs.com with its own site slug), so host/site are
+    -- populated there and null for the rest, which only need `slug`.
+    -- `keywords` is a comma-separated title filter — without it a single large
+    -- employer (Bosch has ~4,700 openings) would bury everything else.
+    CREATE TABLE IF NOT EXISTS job_boards (
+      id              TEXT PRIMARY KEY,
+      ats             TEXT NOT NULL,  -- greenhouse/lever/ashby/smartrecruiters/workday
+      host            TEXT,           -- Workday only: the tenant host
+      slug            TEXT NOT NULL,  -- board token / company / Workday tenant
+      site            TEXT,           -- Workday only: careers site slug
+      company         TEXT NOT NULL,
+      keywords        TEXT,           -- comma-separated; empty means keep all
+      active          INTEGER NOT NULL DEFAULT 1, -- 0/1 boolean
+      last_checked_at TEXT,
+      last_error      TEXT,
+      created_at      TEXT NOT NULL
+    );
+
+    -- Postings found by polling those boards. This table IS the
+    -- pre-application state: `applications.date_applied` is NOT NULL and
+    -- "applied" is the floor of the funnel, so a job you haven't applied to
+    -- cannot live there without corrupting the analytics.
+    CREATE TABLE IF NOT EXISTS discovered_jobs (
+      id             TEXT PRIMARY KEY,
+      board_id       TEXT NOT NULL REFERENCES job_boards(id) ON DELETE CASCADE,
+      external_id    TEXT NOT NULL,   -- the ATS's own id for the posting
+      job_url        TEXT NOT NULL,
+      company        TEXT NOT NULL,
+      role_title     TEXT NOT NULL,
+      location       TEXT,
+      remote         INTEGER,         -- 0/1 boolean, null when the board is silent
+      salary_min     INTEGER,
+      salary_max     INTEGER,
+      posted_at      TEXT,            -- display string as the board words it
+      role_type      TEXT,
+      first_seen_at  TEXT NOT NULL,
+      status         TEXT NOT NULL DEFAULT 'new', -- new/saved/dismissed/applied
+      application_id TEXT REFERENCES applications(id) ON DELETE SET NULL
+    );
+
+    -- The only UNIQUE constraint in this schema, and a deliberate one: polling
+    -- must be idempotent structurally, not because a dedupe query happens to be
+    -- right. Inserts use ON CONFLICT DO NOTHING so a re-refresh is a no-op.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_discovered_unique
+      ON discovered_jobs(board_id, external_id);
+    CREATE INDEX IF NOT EXISTS idx_discovered_status ON discovered_jobs(status);
+
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL

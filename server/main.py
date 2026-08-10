@@ -13,7 +13,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import init_schema
-from .routers import ai, applications, contacts, data, postings, suggestions
+from .routers import (
+    ai,
+    applications,
+    contacts,
+    data,
+    discovery,
+    postings,
+    suggestions,
+)
 
 init_schema()
 
@@ -32,6 +40,7 @@ app.include_router(contacts.router, prefix="/api/contacts")
 app.include_router(suggestions.router, prefix="/api/suggestions")
 app.include_router(data.router, prefix="/api")
 app.include_router(postings.router, prefix="/api")
+app.include_router(discovery.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 
 DIST_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"

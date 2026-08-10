@@ -7,7 +7,11 @@ import type {
   Analytics,
   Application,
   Contact,
+  DiscoveredJob,
+  DiscoveredStatus,
   FetchedPosting,
+  JobBoard,
+  RefreshResult,
   Settings,
   Stage,
   Suggestion,
@@ -40,6 +44,8 @@ const keys = {
   contacts: ["contacts"] as const,
   suggestions: ["suggestions"] as const,
   settings: ["settings"] as const,
+  boards: ["boards"] as const,
+  discovered: (status: DiscoveredStatus) => ["discovered", status] as const,
 };
 
 // After any mutation we invalidate both the list and the analytics so the
@@ -51,6 +57,7 @@ function useInvalidateAll() {
     qc.invalidateQueries({ queryKey: keys.analytics });
     qc.invalidateQueries({ queryKey: ["application"] });
     qc.invalidateQueries({ queryKey: keys.suggestions });
+    qc.invalidateQueries({ queryKey: ["discovered"] });
   };
 }
 
@@ -346,6 +353,80 @@ export function useUpdateSettings() {
       qc.invalidateQueries({ queryKey: keys.settings });
       qc.invalidateQueries({ queryKey: keys.analytics });
     },
+  });
+}
+
+// --- Discovery -----------------------------------------------------------
+
+export function useBoards() {
+  return useQuery({
+    queryKey: keys.boards,
+    queryFn: () => http<JobBoard[]>("/api/boards"),
+  });
+}
+
+function useInvalidateBoards() {
+  const qc = useQueryClient();
+  return () => {
+    qc.invalidateQueries({ queryKey: keys.boards });
+    qc.invalidateQueries({ queryKey: ["discovered"] });
+  };
+}
+
+export function useCreateBoard() {
+  const invalidate = useInvalidateBoards();
+  return useMutation({
+    mutationFn: (input: { url: string; keywords: string; company?: string }) =>
+      http<JobBoard>("/api/boards", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteBoard() {
+  const invalidate = useInvalidateBoards();
+  return useMutation({
+    mutationFn: (id: string) =>
+      http<void>(`/api/boards/${id}`, { method: "DELETE" }),
+    onSuccess: invalidate,
+  });
+}
+
+// Polls every active board. This is the only thing here that hits the network
+// beyond our own API, so it is manual and never fires on page load.
+export function useRefreshBoards() {
+  const invalidate = useInvalidateBoards();
+  return useMutation({
+    mutationFn: () =>
+      http<RefreshResult>("/api/boards/refresh", { method: "POST" }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDiscovered(status: DiscoveredStatus = "new") {
+  return useQuery({
+    queryKey: keys.discovered(status),
+    queryFn: () => http<DiscoveredJob[]>(`/api/discovered?status=${status}`),
+  });
+}
+
+// save / dismiss / apply — one hook, action in the path, mirroring
+// useResolveSuggestion. `apply` creates an application, so this uses the shared
+// invalidator rather than the boards-scoped one.
+export function useResolveDiscovered() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: ({
+      id,
+      action,
+    }: {
+      id: string;
+      action: "save" | "dismiss" | "apply";
+    }) =>
+      http<DiscoveredJob>(`/api/discovered/${id}/${action}`, { method: "POST" }),
+    onSuccess: invalidate,
   });
 }
 

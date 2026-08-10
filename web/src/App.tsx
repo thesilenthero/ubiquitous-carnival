@@ -1,5 +1,10 @@
 import { NavLink, Route, Routes } from "react-router-dom";
-import { useApplications, useContacts, useSuggestions } from "./api";
+import {
+  useApplications,
+  useContacts,
+  useDiscovered,
+  useSuggestions,
+} from "./api";
 import { urgencyOf } from "./lib/format";
 import { ThemeToggle } from "./components/ThemeToggle";
 import Pipeline from "./pages/Pipeline";
@@ -8,6 +13,7 @@ import FollowUps from "./pages/FollowUps";
 import Contacts from "./pages/Contacts";
 import Analytics from "./pages/Analytics";
 import Evaluation from "./pages/Evaluation";
+import Discover from "./pages/Discover";
 import Guide from "./pages/Guide";
 
 function NavItem({
@@ -45,6 +51,7 @@ export default function App() {
   const { data: apps } = useApplications();
   const { data: contacts } = useContacts();
   const { data: suggestions } = useSuggestions();
+  const { data: discovered } = useDiscovered("new");
   const due = (d: string | null) =>
     ["overdue", "today", "soon"].includes(urgencyOf(d));
   const dueCount =
@@ -68,6 +75,11 @@ export default function App() {
           <nav className="flex flex-col gap-1">
             <NavItem to="/" label="Pipeline" />
             <NavItem to="/evaluation" label="Evaluation" />
+            <NavItem
+              to="/discover"
+              label="Discover"
+              badge={discovered?.length ?? 0}
+            />
             <NavItem to="/follow-ups" label="Follow-ups" badge={dueCount} />
             <NavItem to="/contacts" label="Contacts" />
             <NavItem to="/analytics" label="Analytics" />
@@ -91,6 +103,11 @@ export default function App() {
         <span className="mr-2 text-sm font-bold">Job Tracker</span>
         <NavItem to="/" label="Pipeline" />
         <NavItem to="/evaluation" label="Evaluation" />
+            <NavItem
+              to="/discover"
+              label="Discover"
+              badge={discovered?.length ?? 0}
+            />
         <NavItem to="/follow-ups" label="Follow-ups" badge={dueCount} />
         <NavItem to="/contacts" label="Contacts" />
         <NavItem to="/analytics" label="Analytics" />
@@ -104,6 +121,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Pipeline />} />
           <Route path="/evaluation" element={<Evaluation />} />
+          <Route path="/discover" element={<Discover />} />
           <Route path="/follow-ups" element={<FollowUps />} />
           <Route path="/contacts" element={<Contacts />} />
           <Route path="/analytics" element={<Analytics />} />

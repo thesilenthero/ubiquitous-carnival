@@ -197,6 +197,53 @@ export interface FetchedPosting {
   source: PostingSource;
 }
 
+// --- Discovery -----------------------------------------------------------
+
+/** A company ATS board being watched for new postings. */
+export interface JobBoard {
+  id: string;
+  ats: string;
+  /** Workday only — each tenant has its own host. Null elsewhere. */
+  host: string | null;
+  slug: string;
+  /** Workday only — the careers site slug. Null elsewhere. */
+  site: string | null;
+  company: string;
+  /** Comma-separated title filter. Empty keeps every posting. */
+  keywords: string;
+  active: boolean;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+}
+
+export type DiscoveredStatus = "new" | "saved" | "dismissed" | "applied";
+
+export interface DiscoveredJob {
+  id: string;
+  boardId: string;
+  externalId: string;
+  jobUrl: string;
+  company: string;
+  roleTitle: string;
+  location: string | null;
+  remote: boolean | null;
+  salaryMin: number | null;
+  salaryMax: number | null;
+  /** As the board words it — Workday says "Posted 2 Days Ago", not a date. */
+  postedAt: string | null;
+  roleType: string | null;
+  firstSeenAt: string;
+  status: DiscoveredStatus;
+  applicationId: string | null;
+}
+
+export interface RefreshResult {
+  checked: number;
+  added: number;
+  errors: string[];
+}
+
 export interface Application {
   id: string;
   company: string;

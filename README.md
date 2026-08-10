@@ -114,6 +114,12 @@ already present in the log are refused (409), so re-scans are idempotent.
   onto a new pipeline entry. Scoring is done by hand — the rubric anchors are
   expandable inline next to each slider. **Autofill** fills the posting half of
   the form from a URL (see *Autofill from a posting* below).
+- **Discover** — new postings pulled from the ATS boards of employers you're
+  watching. Add a board by pasting its careers URL, give it a keyword filter,
+  and press **Refresh boards**. Each posting can be **Saved** (shortlisted,
+  pipeline untouched), **Applied** (creates an application dated today and
+  fetches the full description), or **Dismissed**. Same contract as the
+  suggestions inbox: it proposes, you decide. See *Board discovery* below.
 - **Guide** — in-app reference for every view, metric definition, threshold,
   and importer caveat; most controls also carry hover tooltips.
 - **Analytics** — live funnel + drop-off, response rate + median days to first
@@ -192,6 +198,11 @@ rate metrics match.
 | GET | `/api/export.csv` | full CSV export |
 | POST | `/api/import` | CSV migration import |
 | POST | `/api/postings/fetch` | `{url}` or `{text}` → draft fields + description (no model, no cost) |
+| GET/POST | `/api/boards` | watched ATS boards / add one from a careers URL |
+| DELETE | `/api/boards/:id` | stop watching (cascades to its discovered jobs) |
+| POST | `/api/boards/refresh` | poll every active board → `{checked, added, errors}` |
+| GET | `/api/discovered` | the inbox (`?status=new\|saved\|dismissed\|applied`) |
+| POST | `/api/discovered/:id/:action` | `save` · `dismiss` · `apply` |
 | GET | `/api/ai/status` | whether an API key is configured — **not called by the UI** |
 | POST | `/api/postings/parse` | `{url}` or `{text}` → draft application fields — **not called by the UI** |
 | POST | `/api/evaluations/score` | job description → rubric scores + notes — **not called by the UI** |
@@ -234,6 +245,45 @@ stack would have bypassed it entirely, which is part of why one isn't used.
 > skew towards European startups — a search for live boards across nine guessed
 > slugs found none, so confirm an employer you actually track uses one before
 > spending the effort.
+
+### Board discovery
+
+The **Discover** view polls the ATS boards of employers you track. It uses the
+same public no-auth APIs as the autofill above, so a refresh costs nothing and
+involves no model.
+
+**Keywords are not optional in practice.** Bosch publishes ~4,700 openings; a
+single unfiltered employer buries everything else. Each board carries a
+comma-separated title filter, matched case-insensitively. Workday and
+SmartRecruiters also accept a server-side search term (the board's first
+keyword) so they fetch less to begin with — but that term matches loosely
+(`q=data analyst` on Bosch still returns ~1,000), so the local filter is the
+authoritative one.
+
+`discovered_jobs` is the app's **pre-application state**, and has to be its own
+table: `applications.date_applied` is `NOT NULL` and `applied` is the floor of
+the funnel, so an un-applied job cannot live in `applications` without
+corrupting every rate metric. Nothing in Discover touches analytics until you
+press Apply.
+
+Two design notes:
+
+> `discovered_jobs(board_id, external_id)` is the **only `UNIQUE` constraint in
+> the schema**, and a deliberate exception to the Python-side dedupe used by
+> `create_suggestion`. Polling is precisely the case where idempotency should be
+> structural rather than dependent on a query being right — inserts use
+> `ON CONFLICT DO NOTHING`, so re-refreshing is a guaranteed no-op.
+>
+> Descriptions are fetched **on Apply, not on poll**. Workday's list endpoint
+> carries no description, and pulling thousands of them per refresh would be
+> absurd. A failure there degrades to an application without a description
+> rather than blocking the apply. Apply is also idempotent — a double click
+> returns the existing application instead of creating a second one.
+
+Per-board failures are recorded in `last_error` and reported in the refresh
+summary, but never abort the batch: one dead slug can't stop the rest ingesting.
+Workday additionally needs its own page size — it rejects `limit > 20` with a
+bare HTTP 400 and no message.
 
 ### Dormant AI endpoints
 

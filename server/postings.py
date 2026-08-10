@@ -378,6 +378,257 @@ _ATS_HANDLERS = (
 )
 
 
+# --- Board listing --------------------------------------------------------
+#
+# `fetch_posting` reads one posting; the functions below list a whole company
+# board so new postings can be discovered. Same endpoints, collection form.
+# Everything goes through `_get_json`, so `_assert_public_url` still applies.
+
+# Bound the work one board can cause. Bosch alone publishes ~4,700 openings;
+# without a cap a single refresh could issue dozens of requests and hang.
+#
+# Page size is per-ATS because Workday rejects anything above 20 with a bare
+# HTTP 400 (no message). Max pages is tuned so each board tops out around the
+# same number of postings despite the different page sizes.
+PAGING = {
+    "workday": (20, 15),
+    "smartrecruiters": (100, 5),
+}
+DEFAULT_PAGING = (100, 5)
+
+
+def _post_json(url: str, payload: dict):
+    """POST + JSON decode. Workday's list endpoint is the only POST here."""
+    _assert_public_url(url)
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            return json.loads(resp.read(MAX_BYTES).decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        raise FetchError(f"The job board returned HTTP {e.code}.", status=422)
+    except urllib.error.URLError as e:
+        raise FetchError(f"Could not reach the job board: {e.reason}.", status=422)
+    except json.JSONDecodeError:
+        raise FetchError("The job board returned something that wasn't JSON.", status=422)
+
+
+def _list_workday(board: dict, term: str) -> list[dict]:
+    host, tenant, site = board["host"], board["slug"], board["site"]
+    base = f"https://{host}/wday/cxs/{tenant}/{site}"
+    size, max_pages = PAGING["workday"]
+    out = []
+    for page in range(max_pages):
+        data = _post_json(
+            f"{base}/jobs",
+            {
+                "appliedFacets": {},
+                "limit": size,
+                "offset": page * size,
+                "searchText": term,
+            },
+        )
+        batch = data.get("jobPostings") or []
+        for j in batch:
+            path = j.get("externalPath") or ""
+            out.append(
+                {
+                    "externalId": path or j.get("title"),
+                    "jobUrl": f"https://{host}/en-US/{site}{path}",
+                    "roleTitle": j.get("title"),
+                    "location": j.get("locationsText"),
+                    # Workday words this as prose ("Posted 2 Days Ago"), so it
+                    # is kept verbatim for display rather than parsed to a date.
+                    "postedAt": j.get("postedOn"),
+                }
+            )
+        if len(batch) < size or len(out) >= data.get("total", 0):
+            break
+    return out
+
+
+def _list_smartrecruiters(board: dict, term: str) -> list[dict]:
+    company = board["slug"]
+    size, max_pages = PAGING["smartrecruiters"]
+    out = []
+    for page in range(max_pages):
+        # `q` narrows server-side but matches loosely (a "data analyst" query on
+        # Bosch still returns ~1,000), so the keyword filter in discovery.py
+        # remains the authoritative one.
+        qs = urllib.parse.urlencode(
+            {"limit": size, "offset": page * size, **({"q": term} if term else {})}
+        )
+        data = _get_json(
+            f"https://api.smartrecruiters.com/v1/companies/{company}/postings?{qs}"
+        )
+        batch = data.get("content") or []
+        for j in batch:
+            loc = j.get("location") or {}
+            where = ", ".join(
+                p for p in (loc.get("city"), loc.get("region"), loc.get("country")) if p
+            )
+            out.append(
+                {
+                    "externalId": str(j.get("id")),
+                    "jobUrl": f"https://jobs.smartrecruiters.com/{company}/{j.get('id')}",
+                    "roleTitle": j.get("name"),
+                    "location": where or None,
+                    "remote": loc.get("remote"),
+                    "postedAt": j.get("releasedDate"),
+                }
+            )
+        if len(batch) < size:
+            break
+    return out
+
+
+def _list_greenhouse(board: dict, term: str) -> list[dict]:
+    slug = board["slug"]
+    data = _get_json(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs")
+    return [
+        {
+            "externalId": str(j.get("id")),
+            "jobUrl": j.get("absolute_url"),
+            "roleTitle": j.get("title"),
+            "location": (j.get("location") or {}).get("name"),
+            "postedAt": j.get("updated_at"),
+        }
+        for j in (data.get("jobs") or [])
+    ]
+
+
+def _list_lever(board: dict, term: str) -> list[dict]:
+    slug = board["slug"]
+    data = _get_json(f"https://api.lever.co/v0/postings/{slug}?mode=json")
+    out = []
+    for j in data if isinstance(data, list) else []:
+        cats = j.get("categories") or {}
+        salary = j.get("salaryRange") or {}
+        out.append(
+            {
+                "externalId": str(j.get("id")),
+                "jobUrl": j.get("hostedUrl"),
+                "roleTitle": j.get("text"),
+                "location": cats.get("location"),
+                "postedAt": j.get("createdAt"),
+                **_salary_hints(salary.get("min"), salary.get("max")),
+            }
+        )
+    return out
+
+
+def _list_ashby(board: dict, term: str) -> list[dict]:
+    slug = board["slug"]
+    data = _get_json(
+        f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
+    )
+    return [
+        {
+            "externalId": str(j.get("id")),
+            "jobUrl": j.get("jobUrl"),
+            "roleTitle": j.get("title"),
+            "location": j.get("location"),
+            "remote": j.get("isRemote"),
+            "postedAt": j.get("publishedAt"),
+        }
+        for j in (data.get("jobs") or [])
+    ]
+
+
+_LISTERS = {
+    "workday": _list_workday,
+    "smartrecruiters": _list_smartrecruiters,
+    "greenhouse": _list_greenhouse,
+    "lever": _list_lever,
+    "ashby": _list_ashby,
+}
+
+# Only these two accept a server-side search term, so they fetch less to begin
+# with. The rest are filtered after fetch, in server/discovery.py.
+SEARCHABLE = {"workday", "smartrecruiters"}
+
+
+def list_board(board: dict, term: str = "") -> list[dict]:
+    """List a company board's open postings, normalised.
+
+    Returns dicts with externalId / jobUrl / roleTitle and optionally location,
+    remote, salaryMin, salaryMax, postedAt. `roleType` is derived here so every
+    ATS gets it for free.
+    """
+    lister = _LISTERS.get(board.get("ats"))
+    if lister is None:
+        raise FetchError(f"Unsupported board type: {board.get('ats')}", status=400)
+    rows = lister(board, term if board.get("ats") in SEARCHABLE else "")
+    out = []
+    for r in rows:
+        if not r.get("roleTitle") or not r.get("jobUrl") or not r.get("externalId"):
+            continue
+        r["roleType"] = classify_role_type(r["roleTitle"])
+        out.append(r)
+    return out
+
+
+def parse_board_url(url: str) -> dict:
+    """Derive a board record from a pasted careers URL.
+
+    Reuses the same host matchers the per-posting handlers use, so all URL
+    knowledge lives in this module.
+    """
+    parsed = _assert_public_url(url)
+    host = (parsed.hostname or "").lower()
+    segments = [s for s in parsed.path.split("/") if s]
+
+    wd = _WORKDAY.match(host)
+    if wd:
+        # /{locale?}/{site}
+        segs = list(segments)
+        if segs and re.fullmatch(r"[a-z]{2}(-[A-Za-z]{2})?", segs[0]):
+            segs = segs[1:]
+        if not segs:
+            raise FetchError(
+                "That Workday URL is missing its careers-site segment "
+                "(e.g. …/en-US/OMERS_External)."
+            )
+        return {
+            "ats": "workday",
+            "host": parsed.hostname,
+            "slug": wd.group(1),
+            "site": segs[0],
+            "company": wd.group(1).replace("-", " ").title(),
+        }
+
+    simple = None
+    if _GREENHOUSE.match(host):
+        simple = "greenhouse"
+    elif host == "jobs.lever.co":
+        simple = "lever"
+    elif host == "jobs.ashbyhq.com":
+        simple = "ashby"
+    elif host in ("jobs.smartrecruiters.com", "careers.smartrecruiters.com"):
+        simple = "smartrecruiters"
+
+    if simple and segments:
+        return {
+            "ats": simple,
+            "host": None,
+            "slug": segments[0],
+            "site": None,
+            "company": segments[0].replace("-", " ").title(),
+        }
+
+    raise FetchError(
+        "That doesn't look like a Workday, Greenhouse, Lever, Ashby, or "
+        "SmartRecruiters board URL."
+    )
+
+
 def fetch_posting(url: str) -> Posting:
     """Fetch a posting URL, preferring an ATS API when one covers it."""
     parsed = _assert_public_url(url)
