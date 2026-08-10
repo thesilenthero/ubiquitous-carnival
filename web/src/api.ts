@@ -168,6 +168,40 @@ export function useDeleteStageEvent() {
   });
 }
 
+// --- Resume attachment ---------------------------------------------------
+
+// Upload deliberately bypasses `http`: that helper sets a JSON Content-Type,
+// and forcing one on a FormData body strips the multipart boundary the server
+// needs to parse it. The browser sets the correct header itself.
+export function useUploadResume() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: async ({ id, file }: { id: string; file: File }) => {
+      const body = new FormData();
+      body.append("file", file);
+      const res = await fetch(`/api/applications/${id}/resume`, {
+        method: "POST",
+        body,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Upload failed: ${res.status}`);
+      }
+      return (await res.json()) as Application;
+    },
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteResume() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: (id: string) =>
+      http<Application>(`/api/applications/${id}/resume`, { method: "DELETE" }),
+    onSuccess: invalidate,
+  });
+}
+
 // --- Interviews ----------------------------------------------------------
 
 export function useAddInterview() {

@@ -45,6 +45,10 @@ overwrite a database that already holds more applications than the sample set
 (override with `FORCE_SEED=1` — it is destructive). Timestamped safety copies
 of the database live in `data/backups/`.
 
+> **Back up `data/`, not `data/app.db`.** Attached resume PDFs live beside the
+> database in `data/resumes/`, so copying the `.db` alone is no longer a
+> complete backup.
+
 Open **http://localhost:5173** in development.
 
 For a production-style run (single process serving everything):
@@ -96,8 +100,9 @@ already present in the log are refused (409), so re-scans are idempotent.
   kanban view: one column per funnel stage plus a combined "Closed" column;
   dragging a card appends a stage event.
 - **Detail** — every field inline-editable; collapsible **job description**
-  and **resume** archives (paste the posting before it disappears, and the
-  exact resume text that went out); **interview rounds** (auto-stubbed from
+  archive (paste the posting before it disappears); the **resume** you actually
+  sent — attach the PDF, download it back later, and its text is extracted for
+  search and the CSV export; **interview rounds** (auto-stubbed from
   stage events) with interviewers, questions asked, and retro notes; full
   stage-history timeline with time-in-stage between events.
 - **Follow-ups** — **suggested updates** awaiting review (accept appends the
@@ -198,6 +203,9 @@ rate metrics match.
 | GET | `/api/export.csv` | full CSV export |
 | POST | `/api/import` | CSV migration import |
 | POST | `/api/postings/fetch` | `{url}` or `{text}` → draft fields + description (no model, no cost) |
+| POST | `/api/applications/:id/resume` | attach a PDF (multipart), replacing any existing one |
+| GET | `/api/applications/:id/resume` | download the attached PDF |
+| DELETE | `/api/applications/:id/resume` | detach the PDF (the archived text is kept) |
 | GET/POST | `/api/boards` | watched ATS boards / add one from a careers URL |
 | DELETE | `/api/boards/:id` | stop watching (cascades to its discovered jobs) |
 | POST | `/api/boards/refresh` | poll every active board → `{checked, added, errors}` |
@@ -245,6 +253,33 @@ stack would have bypassed it entirely, which is part of why one isn't used.
 > skew towards European startups — a search for live boards across nine guessed
 > slugs found none, so confirm an employer you actually track uses one before
 > spending the effort.
+
+### Resume attachments
+
+Each application holds one resume PDF, attached and downloaded from its Detail
+page. The bytes live on disk in `data/resumes/`, not in a BLOB column: every
+resume here is a unique tweak of a previous one, so at ~440 uploads a month a
+BLOB would push `app.db` past a gigabyte within a year and every manual backup
+copy with it. On disk the database stays small and the folder is browsable —
+which is the point, since a new resume is usually made by opening an old one.
+
+Filenames are **generated, never taken from the upload** (a client-supplied name
+is a path-traversal hole), and shaped so the folder reads at a glance and a file
+traces back to its row:
+
+```
+data/resumes/2026-08-10-cibc-senior-analyst-a1b2c3d4.pdf
+```
+
+`server/resume_files.py` owns every path decision; its `path_for()` resolves and
+asserts containment, so even a tampered database value cannot reach outside the
+directory. Uploads are capped at 10MB and must be PDFs.
+
+On upload the text layer is extracted into the existing `resume_text` column, so
+the CSV export stays a complete archive of what you sent. A PDF with no text
+layer (a scanned or image-only resume) still uploads and downloads fine — the
+text is simply left alone, and the UI says so. Detaching a PDF keeps that text;
+deleting the application removes the file.
 
 ### Board discovery
 

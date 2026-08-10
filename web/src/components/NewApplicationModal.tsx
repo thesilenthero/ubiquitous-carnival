@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useCreateApplication } from "../api";
+import { useCreateApplication, useUploadResume } from "../api";
 import { INDUSTRIES, ROLE_TYPES, SOURCES, classifyRoleType } from "../types";
 import type { FetchedPosting } from "../types";
 import { AutofillPosting } from "./AutofillPosting";
@@ -12,6 +12,8 @@ const labelCls = "mb-1 block text-xs font-medium text-[var(--text-muted)]";
 // common case is: type two fields, hit Enter, done — faster than a spreadsheet row.
 export function NewApplicationModal({ onClose }: { onClose: () => void }) {
   const create = useCreateApplication();
+  const upload = useUploadResume();
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [form, setForm] = useState({
     company: "",
     roleTitle: "",
@@ -54,7 +56,7 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.company.trim() || !form.roleTitle.trim()) return;
-    await create.mutateAsync({
+    const created = await create.mutateAsync({
       ...form,
       salaryMin: form.salaryMin ? Number(form.salaryMin) : null,
       salaryMax: form.salaryMax ? Number(form.salaryMax) : null,
@@ -64,6 +66,17 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
       jobDescription: form.jobDescription.trim() || null,
       resumeText: form.resumeText.trim() || null,
     } as never);
+
+    // The upload needs an id, so it can only happen after the create. If it
+    // fails, the application still exists — say so and leave the modal open
+    // rather than silently dropping either the record or the file.
+    if (resumeFile && created?.id) {
+      try {
+        await upload.mutateAsync({ id: created.id, file: resumeFile });
+      } catch {
+        return;
+      }
+    }
     onClose();
   }
 
@@ -235,14 +248,24 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
             />
           </div>
           <div className="col-span-2 sm:col-span-1">
-            <label className={labelCls}>Resume</label>
-            <textarea
-              className={inputCls}
-              rows={3}
-              value={form.resumeText}
-              onChange={(e) => set("resumeText", e.target.value)}
-              placeholder="Paste the resume text you sent with this application"
+            <label className={labelCls}>Resume (PDF)</label>
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={(e) => setResumeFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-[var(--text-muted)] file:mr-3 file:rounded-lg file:border file:border-[var(--border)] file:bg-[var(--surface-2)] file:px-3 file:py-1.5 file:text-sm file:text-[var(--text)]"
             />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              {resumeFile
+                ? `${resumeFile.name} · attaches after the application is created`
+                : "The text is extracted automatically for search and CSV export."}
+            </p>
+            {upload.isError && (
+              <p className="mt-1 text-xs text-[var(--stage-rejected)]">
+                Application created, but the PDF didn't attach:{" "}
+                {(upload.error as Error).message}
+              </p>
+            )}
           </div>
           <div className="col-span-2">
             <label className={labelCls}>Notes</label>

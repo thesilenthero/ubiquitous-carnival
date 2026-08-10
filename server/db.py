@@ -200,6 +200,15 @@ def init_schema() -> None:
         _ensure_column(conn, "applications", "eval_composite", "REAL")
         _ensure_column(conn, "applications", "eval_verdict", "TEXT")
         _ensure_column(conn, "applications", "evaluation", "TEXT")
+        # The attached resume PDF. The bytes live on disk under data/resumes/
+        # (see server/resume_files.py) — at ~440 uploads a month a BLOB would
+        # push this file past a gigabyte a year, and every manual backup copy
+        # with it. `resume_path` is a bare generated filename, never a path from
+        # the client and never absolute, so moving the data directory still works.
+        _ensure_column(conn, "applications", "resume_filename", "TEXT")
+        _ensure_column(conn, "applications", "resume_path", "TEXT")
+        _ensure_column(conn, "applications", "resume_size", "INTEGER")
+        _ensure_column(conn, "applications", "resume_uploaded_at", "TEXT")
         conn.commit()
     finally:
         conn.close()

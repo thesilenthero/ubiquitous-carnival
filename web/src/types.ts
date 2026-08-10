@@ -261,6 +261,11 @@ export interface Application {
   jobUrl: string | null;
   jobDescription: string | null;
   resumeText: string | null;
+  // The attached resume PDF. The bytes live on the server under data/resumes/;
+  // the client downloads by application id, never by path.
+  resumeFilename: string | null;
+  resumeSize: number | null;
+  resumeUploadedAt: string | null;
   notes: string | null;
   nextAction: string | null;
   nextActionDate: string | null;

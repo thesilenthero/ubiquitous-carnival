@@ -45,3 +45,12 @@ export function urgencyOf(nextActionDate: string | null): Urgency {
   if (d <= 3) return "soon";
   return "later";
 }
+
+// File sizes for attachments. Resumes are KB-to-low-MB, so one decimal on MB
+// and none on KB reads cleanly without being noisy.
+export function fmtBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

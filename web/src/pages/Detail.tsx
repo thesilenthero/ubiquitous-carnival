@@ -4,11 +4,13 @@ import {
   useApplication,
   useAddInterview,
   useDeleteInterview,
+  useDeleteResume,
   useDeleteStageEvent,
   useSetStage,
   useUpdateApplication,
   useUpdateInterview,
   useUpdateStageEvent,
+  useUploadResume,
 } from "../api";
 import {
   ALL_STAGES,
@@ -32,7 +34,7 @@ import {
   NumBox,
 } from "../components/fields";
 import { StageBadge } from "../components/StageBadge";
-import { daysBetween, fmtDate } from "../lib/format";
+import { daysBetween, fmtBytes, fmtDate } from "../lib/format";
 import {
   DIMENSIONS,
   REJECT_FLAGS,
@@ -61,6 +63,16 @@ export default function Detail() {
   const [stageDate, setStageDate] = useState(todayStr());
   const [showJd, setShowJd] = useState(false);
   const [showResume, setShowResume] = useState(false);
+  const upload = useUploadResume();
+  const removeResume = useDeleteResume();
+
+  function onPickResume(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset the input so picking the same file twice still fires a change.
+    e.target.value = "";
+    if (!file || !app) return;
+    upload.mutate({ id: app.id, file });
+  }
 
   if (isLoading) return <p className="text-[var(--text-muted)]">Loading…</p>;
   if (!app) return <p>Application not found.</p>;
@@ -244,14 +256,90 @@ export default function Detail() {
         )}
       </section>
 
-      {/* Resume — the exact text that went out with this application. */}
+      {/* Resume — the exact PDF that went out, plus its text for search/export. */}
       <section className="card mt-4 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Resume</h3>
+          {app.resumeFilename ? (
+            <div className="flex items-center gap-2">
+              <a
+                href={`/api/applications/${app.id}/resume`}
+                download
+                className="rounded-lg border border-[var(--border)] px-2.5 py-1 text-xs font-medium hover:bg-[var(--surface-2)]"
+                title="Download the PDF you attached"
+              >
+                ↓ Download
+              </a>
+              <label
+                className="cursor-pointer rounded-lg border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
+                title="Attach a different PDF in its place"
+              >
+                {upload.isPending ? "Uploading…" : "Replace"}
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="hidden"
+                  onChange={onPickResume}
+                />
+              </label>
+            </div>
+          ) : (
+            <label className="cursor-pointer rounded-lg bg-[var(--accent)] px-2.5 py-1 text-xs font-semibold text-white hover:opacity-90">
+              {upload.isPending ? "Uploading…" : "Attach PDF"}
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                className="hidden"
+                onChange={onPickResume}
+              />
+            </label>
+          )}
+        </div>
+
+        {app.resumeFilename && (
+          <div className="mt-2 flex items-center gap-2 text-xs text-[var(--text-muted)]">
+            <span className="truncate">{app.resumeFilename}</span>
+            <span>·</span>
+            <span>{fmtBytes(app.resumeSize)}</span>
+            {app.resumeUploadedAt && (
+              <>
+                <span>·</span>
+                <span>attached {fmtDate(app.resumeUploadedAt)}</span>
+              </>
+            )}
+            <button
+              onClick={() => {
+                if (confirm("Remove the attached PDF? The archived text is kept."))
+                  removeResume.mutate(app.id);
+              }}
+              className="ml-auto shrink-0 text-xs text-red-600 hover:underline"
+            >
+              Remove
+            </button>
+          </div>
+        )}
+
+        {upload.isError && (
+          <p className="mt-2 text-xs text-[var(--stage-rejected)]">
+            {(upload.error as Error).message}
+          </p>
+        )}
+        {app.resumeFilename && !app.resumeText && !upload.isPending && (
+          <p className="mt-2 text-xs text-[var(--text-muted)]">
+            No text layer found in that PDF, so nothing was archived as text —
+            the file itself is stored and downloadable. Paste the text below if
+            you want it in the CSV export.
+          </p>
+        )}
+
         <button
           onClick={() => setShowResume((s) => !s)}
-          title="Archive the resume text you submitted for this application"
-          className="flex w-full items-center justify-between text-left"
+          title="The resume text, used for search and included in the CSV export"
+          className="mt-3 flex w-full items-center justify-between text-left"
         >
-          <h3 className="text-sm font-semibold">Resume</h3>
+          <span className="text-xs font-medium text-[var(--text-muted)]">
+            Archived text
+          </span>
           <span className="text-xs text-[var(--text-muted)]">
             {app.resumeText
               ? `${app.resumeText.length.toLocaleString()} chars · ${showResume ? "hide" : "show"}`
@@ -265,8 +353,8 @@ export default function Detail() {
             defaultValue={app.resumeText ?? ""}
             onBlur={(e) => save({ resumeText: e.target.value || null })}
             rows={10}
-            placeholder="Paste the resume text you sent — so you always know exactly what this company saw."
-            className="mt-3 w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            placeholder="Extracted automatically when you attach a PDF — or paste it here."
+            className="mt-2 w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
           />
         )}
       </section>

@@ -7,6 +7,7 @@ import json
 import sqlite3
 from typing import Any, Optional
 
+from . import resume_files
 from .domain import INTERVIEW_STAGES
 from .ids import nanoid, now_iso
 
@@ -117,6 +118,11 @@ def _map_app(
         "jobUrl": r["job_url"],
         "jobDescription": r["job_description"],
         "resumeText": r["resume_text"],
+        # The attached PDF. `resumePath` is deliberately not exposed — it is an
+        # internal storage detail, and the client downloads by application id.
+        "resumeFilename": r["resume_filename"],
+        "resumeSize": r["resume_size"],
+        "resumeUploadedAt": r["resume_uploaded_at"],
         "notes": r["notes"],
         "nextAction": r["next_action"],
         "nextActionDate": r["next_action_date"],
@@ -378,8 +384,83 @@ def delete_stage_event(
 
 
 def delete_application(conn: sqlite3.Connection, app_id: str) -> bool:
+    # Take the stored resume filename before the row goes, or the PDF is
+    # orphaned on disk with nothing left pointing at it.
+    row = conn.execute(
+        "SELECT resume_path FROM applications WHERE id = ?", (app_id,)
+    ).fetchone()
     cur = conn.execute("DELETE FROM applications WHERE id = ?", (app_id,))
+    if cur.rowcount and row and row["resume_path"]:
+        resume_files.delete(row["resume_path"])
     return cur.rowcount > 0
+
+
+# --- Resume attachment ----------------------------------------------------
+
+
+def get_resume_path(conn: sqlite3.Connection, app_id: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT resume_path FROM applications WHERE id = ?", (app_id,)
+    ).fetchone()
+    return row["resume_path"] if row else None
+
+
+def set_resume(
+    conn: sqlite3.Connection,
+    app_id: str,
+    stored_name: str,
+    original_name: str,
+    size: int,
+    text: Optional[str],
+) -> Optional[dict]:
+    """Record an attached PDF, replacing whatever was there before.
+
+    `text` overwrites resume_text only when extraction produced something —
+    a scanned resume with no text layer must not wipe text pasted by hand.
+    """
+    previous = get_resume_path(conn, app_id)
+    sets = [
+        "resume_path = :path",
+        "resume_filename = :filename",
+        "resume_size = :size",
+        "resume_uploaded_at = :at",
+        "updated_at = :at",
+    ]
+    params = {
+        "id": app_id,
+        "path": stored_name,
+        "filename": original_name,
+        "size": size,
+        "at": now_iso(),
+    }
+    if text:
+        sets.append("resume_text = :text")
+        params["text"] = text
+    cur = conn.execute(
+        f"UPDATE applications SET {', '.join(sets)} WHERE id = :id", params
+    )
+    if not cur.rowcount:
+        return None
+    if previous and previous != stored_name:
+        resume_files.delete(previous)
+    return get_application(conn, app_id)
+
+
+def clear_resume(conn: sqlite3.Connection, app_id: str) -> Optional[dict]:
+    """Detach the PDF. `resume_text` is left alone — it is the archival record
+    of what went out, and is exported to CSV."""
+    previous = get_resume_path(conn, app_id)
+    cur = conn.execute(
+        """UPDATE applications
+           SET resume_path = NULL, resume_filename = NULL, resume_size = NULL,
+               resume_uploaded_at = NULL, updated_at = ?
+           WHERE id = ?""",
+        (now_iso(), app_id),
+    )
+    if not cur.rowcount:
+        return None
+    resume_files.delete(previous)
+    return get_application(conn, app_id)
 
 
 # --- Interviews ----------------------------------------------------------

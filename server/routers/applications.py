@@ -5,10 +5,10 @@ and status code matches the Express implementation exactly.
 """
 import sqlite3
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
-from .. import repo
+from .. import repo, resume_files
 from ..db import get_db
 from ..domain import is_iso_date, is_iso_timestamp, is_stage
 from ..ids import today_str
@@ -228,3 +228,76 @@ def delete_application(app_id: str, conn: sqlite3.Connection = Depends(get_db)):
     if not ok:
         return _err(404, "Not found")
     return Response(status_code=204)
+
+
+# --- Resume attachment ----------------------------------------------------
+#
+# The only multipart routes in the codebase; everything else reads raw JSON.
+# The PDF itself lives on disk (server/resume_files.py), not in the database.
+
+
+@router.post("/{app_id}/resume")
+async def upload_resume(
+    app_id: str,
+    file: UploadFile = File(...),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Attach a PDF, replacing any existing one, and archive its text."""
+    app = repo.get_application(conn, app_id)
+    if not app:
+        return _err(404, "Not found")
+
+    data = await file.read()
+    if not data:
+        return _err(400, "That file is empty.")
+    if len(data) > resume_files.MAX_BYTES:
+        mb = resume_files.MAX_BYTES // (1024 * 1024)
+        return _err(413, f"That file is larger than {mb}MB.")
+    if not resume_files.looks_like_pdf(data, file.filename or ""):
+        return _err(400, "Only PDF files can be attached.")
+
+    stored_name, size = resume_files.save(app, data)
+    updated = repo.set_resume(
+        conn,
+        app_id,
+        stored_name,
+        (file.filename or "resume.pdf"),
+        size,
+        resume_files.extract_text(data),
+    )
+    if not updated:
+        # The row vanished between the lookup and the write; don't leave the
+        # file behind for nothing.
+        resume_files.delete(stored_name)
+        return _err(404, "Not found")
+    return updated
+
+
+@router.get("/{app_id}/resume")
+def download_resume(app_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    app = repo.get_application(conn, app_id)
+    if not app:
+        return _err(404, "Not found")
+    stored = repo.get_resume_path(conn, app_id)
+    if not stored:
+        return _err(404, "No resume is attached to this application.")
+    try:
+        content = resume_files.read(stored)
+    except (ValueError, OSError):
+        # Recorded in the database but unreadable on disk — say so plainly
+        # rather than serving a 500.
+        return _err(410, "The stored resume file is missing.")
+    filename = app.get("resumeFilename") or "resume.pdf"
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.delete("/{app_id}/resume")
+def delete_resume(app_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    updated = repo.clear_resume(conn, app_id)
+    if not updated:
+        return _err(404, "Not found")
+    return updated
