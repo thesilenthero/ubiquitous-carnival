@@ -34,10 +34,10 @@ log = logging.getLogger(__name__)
 MAX_BYTES = 10 * 1024 * 1024  # a resume is a few hundred KB; 10MB is generous
 PDF_MAGIC = b"%PDF-"
 
-# A second home for every attachment, on top of data/{resumes,cover_letters}/.
-# These documents are the hardest thing here to reproduce — each new resume is
-# made by editing the last one — so they get a copy somewhere that syncs off the
-# machine. Set ATTACHMENT_BACKUP_DIR="" to turn mirroring off entirely.
+# Where the archive is written. Nothing in the app ever reads it — the database
+# is the record — so this is an export, kept because these documents are the
+# hardest thing here to reproduce and because a new resume is made by opening
+# the last one in Finder. Set ATTACHMENT_BACKUP_DIR="" to turn it off.
 _BACKUP_DEFAULT = "~/Documents/Career/Applications"
 _backup_env = os.environ.get("ATTACHMENT_BACKUP_DIR", _BACKUP_DEFAULT)
 
