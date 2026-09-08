@@ -72,9 +72,8 @@ overwrite a database that already holds more applications than the sample set
 (override with `FORCE_SEED=1` — it is destructive). Timestamped safety copies
 of the database live in `data/backups/`.
 
-> **Back up `data/`, not `data/app.db`.** Attached PDFs live beside the database
-> in `data/resumes/` and `data/cover_letters/`, so copying the `.db` alone is no
-> longer a complete backup.
+> **`data/app.db` is a complete backup.** The attached PDFs are stored in the
+> database itself, so copying that one file takes the documents with it.
 
 ### The attachment archive
 
@@ -89,12 +88,16 @@ iCloud-synced), one folder per application:
     resume (2026-08-10).pdf     ← displaced by a later upload
 ```
 
-Per application rather than per kind for a concrete reason: the two kinds
-generate the **same** filename and only avoid collision in `data/` by living in
-separate directories, so a flat archive would overwrite half of itself.
+One folder per application, rather than one per kind, so a role's resume and
+cover letter sit together under a name you can recognize.
+
+Now that the database holds the documents this is an **export**, not a second
+store — but it earns its keep: a new resume is usually made by opening an old
+one and editing it, and that wants a folder you can browse in Finder rather than
+a BLOB you have to query for.
 
 The archive is **append-only**. Detaching a document or deleting an application
-removes the copy under `data/` and leaves the archive alone — a backup that
+removes it from the database and leaves the archive alone — a backup that
 vanishes with the original doesn't protect against the mistake it exists for.
 Replacing a document moves the old copy aside under a dated name.
 
@@ -107,7 +110,12 @@ python3 scripts/backup_attachments.py             # copy what's missing
 ```
 
 It is idempotent (identical bytes are skipped) and exits non-zero on failure, so
-it is safe to schedule. Set `ATTACHMENT_BACKUP_DIR=""` to turn archiving off.
+it is safe to schedule.
+
+Archiving turns itself off where it makes no sense: `ATTACHMENT_BACKUP_DIR=""`
+disables it explicitly, and so does a *parent* directory that doesn't exist —
+which is what a cloud host looks like, since there is no `~/Documents/Career`
+there. Nothing is then written outside the database.
 
 ### The synced CSVs
 
@@ -579,37 +587,42 @@ downloaded from its Detail page or picked when the application is created. The
 two kinds behave identically and share one code path, addressed by the `:kind`
 segment of the URL (`resume` or `cover-letter`).
 
-The bytes live on disk in `data/resumes/` and `data/cover_letters/`, not in BLOB
-columns: every document here is a unique tweak of a previous one, so at ~440
-uploads a month BLOBs would push `app.db` past a gigabyte within a year and
-every manual backup copy with it. On disk the database stays small and the
-folders are browsable — which is the point, since a new resume is usually made
-by opening an old one.
+**The bytes live in the database**, in `attachment_blobs`, keyed by
+`(application_id, kind)`. An earlier version stored them on disk under
+`data/resumes/` and `data/cover_letters/` and argued that BLOBs would push
+`app.db` past a gigabyte within a year. Once there was a real corpus to measure,
+that turned out to be wrong by roughly 3x — 191 attachments came to 12.3MB,
+averaging 63KB with the largest at 141KB, and `app.db` holding all of it is
+14MB. What the on-disk store actually cost was portability, which is why it is
+gone: **a deployment needs the database and nothing else on its filesystem**, so
+the app can move to a hosted database without losing the documents. `BLOB` ports
+directly to Postgres `BYTEA`.
 
-Filenames are **generated, never taken from the upload** (a client-supplied name
-is a path-traversal hole), and shaped so the folder reads at a glance and a file
-traces back to its row:
+They get their own table rather than BLOB columns on `applications` because the
+list view reads `SELECT * FROM applications` — blob columns there would drag
+every megabyte of PDF through every Pipeline and Board render. Nothing but the
+download route touches `attachment_blobs`.
 
-```
-data/resumes/2026-08-10-cibc-senior-analyst-a1b2c3d4.pdf
-data/cover_letters/2026-08-10-cibc-senior-analyst-a1b2c3d4.pdf
-```
+The metadata stays on the application row: `*_filename` (the name the file was
+uploaded under, used for `Content-Disposition`), `*_size`, `*_uploaded_at`, and
+the extracted `*_text`. The stored SHA-256 doubles as the download `ETag`.
 
-The two kinds can generate the same name; they never collide because each has
-its own directory.
+`server/attachment_files.py` owns the `KINDS` table — the only place the per-kind
+column names are written — and a `kind` from a request is resolved through it
+before it is used for anything, so no request string ever reaches the SQL built
+in `repo.py`. It also owns **every path decision** for the archive below, which
+is the one place attachments still touch a filesystem. Uploads are capped at
+10MB and must be PDFs.
 
-`server/attachment_files.py` owns every path decision. Its frozen `KINDS` table
-is the only place the per-kind directory and column names are written, and a
-`kind` from a request is resolved through it before it is used for anything — so
-no request string ever reaches the SQL built in `repo.py`. Its `path_for()`
-resolves and asserts containment, so even a tampered database value cannot reach
-outside the directory. Uploads are capped at 10MB and must be PDFs.
+Migrating an older database is `scripts/migrate_attachments_to_db.py`: it loads
+each file, verifies the stored blob against it by SHA-256, and leaves the disk
+copies alone until a later `--prune` run removes them.
 
 On upload the text layer is extracted into that kind's text column
 (`resume_text` / `cover_letter_text`). A PDF with no text layer (a scanned or
 image-only document) still uploads and downloads fine — the text is simply left
 alone, and the UI says so. Detaching a PDF keeps that text; deleting the
-application removes both files. Only `resume_text` reaches the export's
+application takes both documents with it, by `ON DELETE CASCADE`. Only `resume_text` reaches the export's
 `applications.csv`, which is unchanged.
 
 The original `/api/applications/:id/resume` paths still work as aliases.

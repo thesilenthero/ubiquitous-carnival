@@ -275,9 +275,10 @@ def delete_application(app_id: str, conn: sqlite3.Connection = Depends(get_db)):
 # --- PDF attachments ------------------------------------------------------
 #
 # The only multipart routes in the codebase; everything else reads raw JSON.
-# The PDFs themselves live on disk (server/attachment_files.py), not in the
-# database. `kind` is "resume" or "cover-letter" and is resolved through the
-# frozen table in attachment_files before it is used for anything.
+# The PDFs are stored in the database (`attachment_blobs`, see db.py), so a
+# deployment needs nothing on its filesystem. `kind` is "resume" or
+# "cover-letter" and is resolved through the frozen table in attachment_files
+# before it is used for anything.
 
 # The camelCase response key holding the original upload name, per kind. The
 # Kind table carries the snake_case column; this is its _map_app counterpart.
@@ -302,20 +303,17 @@ async def _upload(kind_key: str, app_id: str, file: UploadFile, conn: sqlite3.Co
     if not attachment_files.looks_like_pdf(data, file.filename or ""):
         return _err(400, "Only PDF files can be attached.")
 
-    stored_name, size = attachment_files.save(kind, app, data)
     updated = repo.set_attachment(
         conn,
         app_id,
         kind,
-        stored_name,
+        data,
         (file.filename or kind.default_name),
-        size,
         attachment_files.extract_text(data),
     )
     if not updated:
-        # The row vanished between the lookup and the write; don't leave the
-        # file behind for nothing.
-        attachment_files.delete(kind, stored_name)
+        # The row vanished between the lookup and the write. set_attachment
+        # rolls back, so there is nothing to clean up here.
         return _err(404, "Not found")
     return updated
 
@@ -327,20 +325,21 @@ def _download(kind_key: str, app_id: str, conn: sqlite3.Connection):
     app = repo.get_application(conn, app_id)
     if not app:
         return _err(404, "Not found")
-    stored = repo.get_attachment_path(conn, app_id, kind)
+    stored = repo.get_attachment_bytes(conn, app_id, kind)
     if not stored:
         return _err(404, f"No {kind.label} is attached to this application.")
-    try:
-        content = attachment_files.read(kind, stored)
-    except (ValueError, OSError):
-        # Recorded in the database but unreadable on disk — say so plainly
-        # rather than serving a 500.
-        return _err(410, f"The stored {kind.label} file is missing.")
+    content, digest = stored
     filename = app.get(_FILENAME_KEY[kind.key]) or kind.default_name
+    # The document is immutable for as long as it is attached — replacing it
+    # writes a new hash — so the stored digest is a free, exact ETag.
     return Response(
         content=content,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
+            "ETag": f'"{digest}"',
+        },
     )
 
 

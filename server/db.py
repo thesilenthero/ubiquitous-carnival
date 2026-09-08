@@ -210,6 +210,26 @@ SCHEMA = """
       until      TEXT NOT NULL,      -- ISO date; hidden while today < until
       created_at TEXT NOT NULL
     );
+
+    -- The attached PDFs themselves. Their own table rather than BLOB columns on
+    -- `applications`, because the list view reads `SELECT * FROM applications`
+    -- (repo.list_applications) and would otherwise drag every megabyte of PDF
+    -- through every Pipeline and Board render. Nothing but the download route
+    -- reads this table.
+    --
+    -- `kind` is a key from attachment_files.KINDS ('resume' | 'cover-letter'),
+    -- resolved through that table before it ever reaches a query. The metadata
+    -- for each attachment -- filename, size, uploaded_at, extracted text --
+    -- stays in its columns on `applications`, where the API already reads it.
+    CREATE TABLE IF NOT EXISTS attachment_blobs (
+      application_id TEXT    NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+      kind           TEXT    NOT NULL,
+      bytes          BLOB    NOT NULL,
+      byte_size      INTEGER NOT NULL,
+      sha256         TEXT    NOT NULL,   -- verifies the migration; serves as the ETag
+      created_at     TEXT    NOT NULL,
+      PRIMARY KEY (application_id, kind)
+    );
 """
 
 

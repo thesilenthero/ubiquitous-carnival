@@ -1,29 +1,33 @@
-"""On-disk storage for the PDFs attached to an application.
+"""The PDFs attached to an application: validation, naming, and the archive.
 
 Two kinds are attachable — the resume and the cover letter — and they behave
 identically, so everything here is parameterized by `Kind` rather than written
 twice. Adding a third kind is one entry in `KINDS` plus five columns.
 
-The bytes live beside the database in `data/resumes/` and `data/cover_letters/`
-rather than in BLOB columns: every document here is a unique tweak of a previous
-one, so at ~440 uploads a month BLOBs would push app.db past a gigabyte within a
-year and every manual `cp` backup would copy all of it again. On disk the
-database stays small and the files are browsable — which matters, because the way
-a new resume gets made is by opening an old one and editing it.
+The bytes live in the database, in the `attachment_blobs` table (see db.py), not
+on disk. An earlier version of this module stored them under data/resumes/ and
+data/cover_letters/ and argued that BLOBs would push app.db past a gigabyte
+within a year. Measured against the real corpus once it existed, that was wrong
+by roughly 3x: 192 attachments came to 11.8MB, averaging 63KB with the largest
+at 141KB. Even at 440 uploads a month that is ~28MB a month, and app.db holding
+all of it is ~14MB.
 
-This module owns the directories and **every path decision**. No route joins
-paths itself; a filename that came from a client must never reach the filesystem.
+What the on-disk store cost instead was portability, and that is the reason for
+the move: the app is meant to be deployable to a cloud database, and a host with
+an ephemeral filesystem cannot keep the documents. In the database they travel
+with everything else, and BLOB ports directly to Postgres BYTEA.
+
+What remains here is everything that is *not* storage: the Kind table, the
+upload validation, text extraction, and the off-machine archive below — which is
+now a best-effort export rather than a copy of a primary file.
 """
 import datetime as dt
 import logging
 import os
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-
-from .db import DB_PATH
 
 log = logging.getLogger(__name__)
 
@@ -36,24 +40,42 @@ PDF_MAGIC = b"%PDF-"
 # machine. Set ATTACHMENT_BACKUP_DIR="" to turn mirroring off entirely.
 _BACKUP_DEFAULT = "~/Documents/Career/Applications"
 _backup_env = os.environ.get("ATTACHMENT_BACKUP_DIR", _BACKUP_DEFAULT)
-BACKUP_ROOT: Optional[Path] = Path(_backup_env).expanduser() if _backup_env else None
+
+
+def _resolve_backup_root(value: str) -> Optional[Path]:
+    """The archive directory, or None when there should not be one.
+
+    Empty turns archiving off explicitly. A *parent* that does not exist turns
+    it off implicitly, which is what happens on a cloud host: there is no
+    ~/Documents/Career there, and creating a stray tree under a container's
+    home directory would archive documents into something that vanishes on the
+    next deploy. Missing only the leaf is normal — a first run makes it.
+    """
+    if not value:
+        return None
+    root = Path(value).expanduser()
+    return root if root.parent.exists() else None
+
+
+BACKUP_ROOT: Optional[Path] = _resolve_backup_root(_backup_env)
 
 
 @dataclass(frozen=True)
 class Kind:
-    """One attachable document type, and the five columns that record it.
+    """One attachable document type, and the columns that record it.
 
     The column names live here and nowhere else. They are interpolated into SQL
     in repo.py, which is safe precisely because they are constants from this
     table — a `kind` from a request is resolved through `KINDS` first (see
-    `by_key`), so a request string never reaches an f-string.
+    `by_key`), so a request string never reaches an f-string. `key` is also the
+    `kind` value stored in `attachment_blobs`, for the same reason.
     """
 
-    key: str  # the URL segment
+    key: str  # the URL segment, and the `kind` column in attachment_blobs
     label: str  # how it reads in an error message
-    dir_name: str
-    default_name: str  # Content-Disposition fallback
-    path_col: str
+    dir_name: str  # the retired data/ subdirectory; read by the migration only
+    default_name: str  # Content-Disposition fallback, and the archive filename
+    path_col: str  # likewise retired: the migration reads it, then it is dropped
     filename_col: str
     size_col: str
     uploaded_col: str
@@ -93,37 +115,31 @@ def by_key(key: str) -> Optional[Kind]:
     return KINDS.get(key)
 
 
-def dir_for(kind: Kind) -> Path:
-    """Resolved once per call so an overridden DB_PATH still works (the README
-    documents DB_PATH, and the test suite relies on it)."""
-    d = Path(DB_PATH).resolve().parent / kind.dir_name
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _slug(value: str, limit: int = 28) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
-    return s[:limit].strip("-")
-
-
 # --- The iCloud archive ---------------------------------------------------
 #
-# Same module, because the rule at the top of this file still holds: no caller
-# joins its own paths. The archive differs from the primary store in two ways
-# that matter, both deliberate:
+# The one place attachments still touch a filesystem, and the reason this module
+# still owns **every path decision**: no caller joins its own paths, and no name
+# that came from a client is ever used as one.
 #
-#   * It is organized per application, not per kind. The primary store gets away
-#     with one directory per kind because a resume and its cover letter generate
-#     the SAME filename (see stored_name_for) and only avoid collision by living
-#     in different folders — flattening them into one archive directory would
-#     silently overwrite half of it.
-#   * It is append-only. Nothing here deletes; `delete()` below touches only the
-#     primary copy. A backup that disappears when you detach a file in the app
-#     does not protect you from the mistake a backup is for.
+# Now that the database holds the documents, this is an export rather than a
+# backup of a primary file — but it is not decoration. The way a new resume gets
+# made is by opening an old one and editing it, and that wants a folder you can
+# browse in Finder, not a BLOB you have to query for. Two properties matter:
+#
+#   * It is organized per application, not per kind, so an application's resume
+#     and cover letter sit together in one folder named for the role.
+#   * It is append-only. Nothing here deletes: detaching a document in the app
+#     leaves the archived copy alone, and re-attaching moves the old one aside
+#     with a dated name (see `_versioned_sibling`). A backup that disappears
+#     when you delete something does not protect you from the mistake a backup
+#     is for.
+#
+# It is also entirely optional. `ATTACHMENT_BACKUP_DIR=""`, or a host with no
+# ~/Documents/Career, turns it off and nothing is written outside the database.
 
 
 def _safe(value: str, limit: int = 80) -> str:
-    """A human-readable path component. Unlike `_slug`, keeps case and spaces.
+    """A human-readable path component: keeps case and spaces.
 
     `/` is a path separator and `:` is still shown as one by Finder, so both are
     replaced rather than stripped — dropping them would run words together.
@@ -173,103 +189,42 @@ def _versioned_sibling(dest: Path) -> Path:
     return candidate
 
 
-def mirror(kind: Kind, stored_name: str, folder: str) -> bool:
+def mirror(kind: Kind, data: bytes, folder: str) -> bool:
     """Copy an attachment into the archive. True if the archive now holds it.
 
-    Copies the file that was actually persisted rather than the uploaded bytes,
-    so the archive is a copy of the real record, not a second interpretation of
+    Writes the same bytes that were committed to `attachment_blobs`, so the
+    archive is a copy of the real record rather than a second interpretation of
     the request.
 
     Never raises: an unreachable or unwritable archive is a degraded backup, not
-    a failed upload, and the primary copy is already safe by the time this runs.
+    a failed upload, and the database already holds the document by the time
+    this runs.
     """
     dest = backup_path(kind, folder)
     if dest is None:
         return False
     try:
-        source = path_for(kind, stored_name)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         if dest.exists():
             # Re-uploading the same document is common (a stray double-click, a
             # re-run of the backfill). Identical bytes means there is nothing to
             # archive and no reason to churn a synced folder.
-            if dest.stat().st_size == source.stat().st_size and dest.read_bytes() == source.read_bytes():
+            if dest.stat().st_size == len(data) and dest.read_bytes() == data:
                 return True
             dest.rename(_versioned_sibling(dest))
 
-        shutil.copy2(source, dest)
+        dest.write_bytes(data)
         return True
     except Exception as e:  # noqa: BLE001 — see the docstring
         log.warning(
-            "Could not archive the %s to %s: %s. The primary copy under %s is "
+            "Could not archive the %s to %s: %s. The copy in the database is "
             "unaffected; run scripts/backup_attachments.py to retry.",
             kind.label,
             BACKUP_ROOT,
             e,
-            kind.dir_name,
         )
         return False
-
-
-def stored_name_for(kind: Kind, app: dict) -> str:
-    """Build the on-disk filename. Generated, never derived from the upload.
-
-    Shaped so the folder is readable at a glance and a file can be traced back
-    to its row: 2026-08-10-cibc-senior-analyst-a1b2c3d4.pdf
-
-    The two kinds can produce the same name; they never collide because each
-    kind has its own directory.
-    """
-    parts = [
-        dt.datetime.now(dt.timezone.utc).date().isoformat(),
-        _slug(app.get("company") or ""),
-        _slug(app.get("roleTitle") or ""),
-        (app.get("id") or "")[:8],
-    ]
-    return "-".join(p for p in parts if p) + ".pdf"
-
-
-def path_for(kind: Kind, stored_name: str) -> Path:
-    """Resolve a stored filename to an absolute path inside the kind's folder.
-
-    Every read and delete goes through here. The containment check is the whole
-    point: even a tampered database value cannot reach outside the directory.
-    """
-    if not stored_name:
-        raise ValueError(f"no {kind.label} file recorded")
-    base = dir_for(kind)
-    candidate = (base / stored_name).resolve()
-    if candidate.parent != base:
-        raise ValueError(f"{kind.label} path escapes the {kind.dir_name} directory")
-    return candidate
-
-
-def save(kind: Kind, app: dict, data: bytes) -> tuple[str, int]:
-    """Write the PDF and return (stored_name, size). Overwrites in place."""
-    name = stored_name_for(kind, app)
-    path_for(kind, name).write_bytes(data)
-    return name, len(data)
-
-
-def delete(kind: Kind, stored_name: Optional[str]) -> None:
-    """Remove a stored file. Tolerant of one that is already gone.
-
-    Deletes the primary copy only — the archive under BACKUP_ROOT is append-only
-    and is deliberately left alone. See the archive section above.
-    """
-    if not stored_name:
-        return
-    try:
-        path_for(kind, stored_name).unlink(missing_ok=True)
-    except ValueError:
-        # A bad stored value can't be turned into a path; there is nothing to
-        # unlink, and refusing to delete the row over it would be worse.
-        pass
-
-
-def read(kind: Kind, stored_name: str) -> bytes:
-    return path_for(kind, stored_name).read_bytes()
 
 
 def looks_like_pdf(data: bytes, filename: str) -> bool:

@@ -4,13 +4,14 @@ Responses are hand-built dicts with the exact camelCase keys the frontend
 expects; every function takes an explicit connection (see db.get_db).
 """
 import datetime as dt
+import hashlib
 import json
 import logging
 import sqlite3
 from typing import Any, Optional
 
 from . import activity, attachment_files
-from .attachment_files import COVER_LETTER, RESUME, Kind
+from .attachment_files import Kind
 from .domain import (
     DEFAULT_SALARY_PERIOD,
     DEFAULT_WORK_MODE,
@@ -584,21 +585,13 @@ def delete_stage_event(
 
 
 def delete_application(conn: sqlite3.Connection, app_id: str) -> bool:
-    # Take the stored filenames before the row goes, or the PDFs are orphaned
-    # on disk with nothing left pointing at them.
-    cols = ", ".join(k.path_col for k in (RESUME, COVER_LETTER))
-    row = conn.execute(
-        f"SELECT {cols} FROM applications WHERE id = ?", (app_id,)
-    ).fetchone()
     app = get_application(conn, app_id)
     cur = conn.execute("DELETE FROM applications WHERE id = ?", (app_id,))
-    if cur.rowcount and row:
-        for kind in (RESUME, COVER_LETTER):
-            attachment_files.delete(kind, row[kind.path_col])
     if cur.rowcount and app:
         # The cascade has just taken this application's stage events,
-        # interviews and suggestions with it. One entry stands for all of it —
-        # and survives, because activity carries no foreign key back.
+        # interviews, suggestions and attached PDFs with it. One entry stands
+        # for all of it — and survives, because activity carries no foreign key
+        # back.
         activity.record(
             conn, "application", app_id, activity.DELETED,
             summary=f"Deleted {_label(app)}",
@@ -611,38 +604,61 @@ def delete_application(conn: sqlite3.Connection, app_id: str) -> bool:
 
 # --- PDF attachments ------------------------------------------------------
 #
-# One implementation for both kinds. The column names come from the frozen
-# table in attachment_files, never from a request, which is what makes the
-# f-string interpolation below safe.
+# One implementation for both kinds. The column names come from the frozen table
+# in attachment_files, never from a request, which is what makes the f-string
+# interpolation below safe.
+#
+# The bytes live in `attachment_blobs`, keyed by (application_id, kind); the
+# metadata — filename, size, uploaded_at, extracted text — stays in its columns
+# on `applications`, where _map_app already reads it. Nothing but the download
+# route loads a blob, which is the point of the split (see db.py).
 
 
-def get_attachment_path(
-    conn: sqlite3.Connection, app_id: str, kind: Kind
-) -> Optional[str]:
+def has_attachment(conn: sqlite3.Connection, app_id: str, kind: Kind) -> bool:
+    """Whether a document of this kind is attached, without reading it."""
     row = conn.execute(
-        f"SELECT {kind.path_col} FROM applications WHERE id = ?", (app_id,)
+        "SELECT 1 FROM attachment_blobs WHERE application_id = ? AND kind = ?",
+        (app_id, kind.key),
     ).fetchone()
-    return row[kind.path_col] if row else None
+    return row is not None
+
+
+def get_attachment_bytes(
+    conn: sqlite3.Connection, app_id: str, kind: Kind
+) -> Optional[tuple[bytes, str]]:
+    """The stored PDF and its SHA-256, or None if nothing is attached.
+
+    The hash comes back with the bytes because the download route serves it as
+    the ETag — it is already stored, so this costs nothing.
+    """
+    row = conn.execute(
+        "SELECT bytes, sha256 FROM attachment_blobs WHERE application_id = ? AND kind = ?",
+        (app_id, kind.key),
+    ).fetchone()
+    return (row["bytes"], row["sha256"]) if row else None
 
 
 def set_attachment(
     conn: sqlite3.Connection,
     app_id: str,
     kind: Kind,
-    stored_name: str,
+    data: bytes,
     original_name: str,
-    size: int,
     text: Optional[str],
 ) -> Optional[dict]:
-    """Record an attached PDF, replacing whatever was there before.
+    """Store an attached PDF, replacing whatever was there before.
+
+    The blob and the metadata are written under one transaction: either the
+    application row records a document and the document is there, or neither
+    happened. There is no window in which one exists without the other.
 
     `text` overwrites the kind's text column only when extraction produced
     something — a scanned document with no text layer must not wipe text that
     was pasted by hand.
     """
-    previous = get_attachment_path(conn, app_id, kind)
+    digest = hashlib.sha256(data).hexdigest()
+    at = now_iso()
     sets = [
-        f"{kind.path_col} = :path",
         f"{kind.filename_col} = :filename",
         f"{kind.size_col} = :size",
         f"{kind.uploaded_col} = :at",
@@ -650,24 +666,35 @@ def set_attachment(
     ]
     params = {
         "id": app_id,
-        "path": stored_name,
         "filename": original_name,
-        "size": size,
-        "at": now_iso(),
+        "size": len(data),
+        "at": at,
     }
     if text:
         sets.append(f"{kind.text_col} = :text")
         params["text"] = text
-    cur = conn.execute(
-        f"UPDATE applications SET {', '.join(sets)} WHERE id = :id", params
-    )
-    if not cur.rowcount:
-        return None
-    if previous and previous != stored_name:
-        attachment_files.delete(kind, previous)
+
+    with conn:
+        cur = conn.execute(
+            f"UPDATE applications SET {', '.join(sets)} WHERE id = :id", params
+        )
+        if not cur.rowcount:
+            # The row vanished between the caller's lookup and this write. The
+            # transaction rolls back, so no blob is left pointing at nothing.
+            return None
+        conn.execute(
+            """INSERT INTO attachment_blobs
+                 (application_id, kind, bytes, byte_size, sha256, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(application_id, kind) DO UPDATE SET
+                 bytes = excluded.bytes, byte_size = excluded.byte_size,
+                 sha256 = excluded.sha256, created_at = excluded.created_at""",
+            (app_id, kind.key, data, len(data), digest, at),
+        )
+
     app = get_application(conn, app_id)
     if app:
-        _archive_attachment(conn, app, kind, stored_name)
+        _archive_attachment(conn, app, kind, data)
         app = get_application(conn, app_id)
     if app:
         activity.record(
@@ -679,14 +706,14 @@ def set_attachment(
 
 
 def _archive_attachment(
-    conn: sqlite3.Connection, app: dict, kind: Kind, stored_name: str
+    conn: sqlite3.Connection, app: dict, kind: Kind, data: bytes
 ) -> None:
     """Copy the just-attached document into the off-machine archive.
 
-    Best-effort by design. The primary copy is already written and recorded by
-    the time this runs, so a full disk or an unreachable iCloud folder must
-    degrade the backup, never fail the upload. `scripts/backup_attachments.py`
-    re-syncs whatever was missed.
+    Best-effort by design. The database already holds the document by the time
+    this runs, so a full disk or an unreachable iCloud folder must degrade the
+    export, never fail the upload. `scripts/backup_attachments.py` re-syncs
+    whatever was missed.
 
     The folder is claimed on the first attachment and reused forever after, so
     a resume and its cover letter stay together even if the company, role, or
@@ -694,7 +721,7 @@ def _archive_attachment(
     """
     try:
         folder = app.get("backupDir") or attachment_files.backup_folder_name(app)
-        if not attachment_files.mirror(kind, stored_name, folder):
+        if not attachment_files.mirror(kind, data, folder):
             return
         if not app.get("backupDir"):
             conn.execute(
@@ -709,19 +736,22 @@ def clear_attachment(
     conn: sqlite3.Connection, app_id: str, kind: Kind
 ) -> Optional[dict]:
     """Detach the PDF. The text column is left alone — it is the archival
-    record of what went out."""
-    previous = get_attachment_path(conn, app_id, kind)
-    cur = conn.execute(
-        f"""UPDATE applications
-            SET {kind.path_col} = NULL, {kind.filename_col} = NULL,
-                {kind.size_col} = NULL, {kind.uploaded_col} = NULL,
-                updated_at = ?
-            WHERE id = ?""",
-        (now_iso(), app_id),
-    )
-    if not cur.rowcount:
-        return None
-    attachment_files.delete(kind, previous)
+    record of what went out. So is the copy in the iCloud archive."""
+    with conn:
+        cur = conn.execute(
+            f"""UPDATE applications
+                SET {kind.filename_col} = NULL, {kind.size_col} = NULL,
+                    {kind.uploaded_col} = NULL, updated_at = ?
+                WHERE id = ?""",
+            (now_iso(), app_id),
+        )
+        if not cur.rowcount:
+            return None
+        conn.execute(
+            "DELETE FROM attachment_blobs WHERE application_id = ? AND kind = ?",
+            (app_id, kind.key),
+        )
+
     app = get_application(conn, app_id)
     if app:
         activity.record(

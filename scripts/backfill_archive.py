@@ -16,7 +16,7 @@ Three steps, run in order:
 Matching is a separate step on purpose: it writes its decisions to a JSON file
 you can read and correct, and `apply` is then a dumb executor over that file.
 
-Attachments go through attachment_files.save + repo.set_attachment — the same
+Attachments go through repo.set_attachment — the same
 path an upload takes — so text extraction, the activity log, and the off-machine
 archive mirror all happen exactly as they would for a real upload. Job
 descriptions have no attachment kind (there are only two, resume and cover
@@ -502,7 +502,7 @@ def attach(conn, app, entry, dry_run, counts):
     skipped = failed = 0
 
     for kind, name in ((af.RESUME, files["resume"]), (af.COVER_LETTER, files["coverLetter"])):
-        if repo.get_attachment_path(conn, app["id"], kind):
+        if repo.has_attachment(conn, app["id"], kind):
             skipped += 1
             continue
         source, original = (os.path.join(folder, name), name) if name else (None, None)
@@ -532,9 +532,8 @@ def attach(conn, app, entry, dry_run, counts):
             print(f"  would attach {kind.key:12} {label}  <- {original}")
             counts[kind.key] += 1
             continue
-        stored, size = af.save(kind, app, payload)
         if repo.set_attachment(
-            conn, app["id"], kind, stored, original, size, af.extract_text(payload)
+            conn, app["id"], kind, payload, original, af.extract_text(payload)
         ) is None:
             print(f"  FAILED   {label} {kind.key}: row vanished mid-update")
             failed += 1
