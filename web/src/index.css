@@ -1,47 +1,217 @@
 @import "tailwindcss";
 
-/* Design tokens. Light is the default; dark is applied either by an explicit
-   [data-theme="dark"] (the user's manual choice) or by the OS preference when
-   the user hasn't overridden to light. A manual choice always wins. */
+/* ============================================================================
+   Design tokens
+
+   Light is the default. Dark is applied either by an explicit
+   [data-theme="dark"] (the user's manual choice, set by ThemeToggle) or by the
+   OS preference when the user hasn't overridden to light. A manual choice
+   always wins.
+
+   The dark values are declared ONCE below as --d-*, because two separate
+   selectors have to apply them and CSS can't share a declaration block across
+   a media-query boundary. Edit a dark color in exactly one place.
+   ========================================================================= */
+
 :root {
-  --bg: #f6f7f9;
+  /* --- dark palette, single source of truth (see the two selectors below) -- */
+  --d-bg: #0a0a0b;
+  --d-surface: #111113;
+  --d-surface-2: #18181b;
+  --d-border: #232326;
+  --d-border-strong: #34343a;
+  --d-text: #ededef;
+  --d-text-muted: #8b8b93;
+  --d-accent: #a5a3f5;
+  --d-accent-fill: #5b57d6;
+  --d-accent-fill-hover: #6d69e3;
+  --d-accent-soft: #1c1b33;
+  --d-danger: #f87171;
+  --d-danger-soft: #2a1416;
+  --d-warning: #fbbf24;
+  --d-success: #34d399;
+  --d-scrim: rgb(0 0 0 / 0.65);
+  --d-shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --d-shadow-sm: 0 1px 3px rgb(0 0 0 / 0.5), 0 1px 2px rgb(0 0 0 / 0.3);
+  --d-shadow-md: 0 4px 14px -2px rgb(0 0 0 / 0.55), 0 2px 6px -2px rgb(0 0 0 / 0.4);
+  --d-shadow-lg: 0 20px 50px -12px rgb(0 0 0 / 0.7);
+  /* The stage scale runs deep on white and bright on black — a straight flip
+     of one set would either glow or disappear. */
+  --d-stage-interested: #64748b;
+  --d-stage-applied: #94a3b8;
+  --d-stage-screen: #38bdf8;
+  --d-stage-first-round: #22d3ee;
+  --d-stage-later-round: #818cf8;
+  --d-stage-final: #a78bfa;
+  --d-stage-offer: #4ade80;
+  --d-stage-rejected: #f87171;
+  --d-stage-withdrawn: #a8a29e;
+  --d-stage-ghosted: #fbbf24;
+
+  --d-on-stage: #0a0a0b;
+
+  --d-chart-1: #7c83f0;
+  --d-chart-2: #22b8d4;
+  --d-chart-3: #26a866;
+
+  /* --- light palette (the default theme) --------------------------------- */
+  --bg: #fafafa;
   --surface: #ffffff;
-  --surface-2: #f9fafb;
-  --border: #e6e8ec;
-  --text: #1a1d23;
-  --text-muted: #6b7280;
+  --surface-2: #f4f4f5;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --text: #18181b;
+  --text-muted: #71717a;
+
   --accent: #4f46e5;
-  --accent-soft: #eef2ff;
+  --accent-fill: #4f46e5;
+  --accent-fill-hover: #4338ca;
+  --accent-soft: #eef0fe;
+  --on-accent: #ffffff;
+  /* Ink for text sitting ON a filled stage/verdict colour. The stage scale is
+     deep in light mode and bright in dark, so the readable ink flips with it. */
+  --on-stage: #ffffff;
+
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
+  --warning: #d97706;
+  --success: #059669;
+
+  --ring: color-mix(in srgb, var(--accent) 35%, transparent);
+  --scrim: rgb(24 24 27 / 0.45);
+
+  /* Radii. `sm` for chips and dense controls, `md` for buttons and inputs,
+     `lg` for cards, `xl` for the modal and other large panels. */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Shadows stay deliberately faint — this is a border-defined UI, and
+     elevation is reserved for things that genuinely float. */
+  --shadow-xs: 0 1px 2px rgb(24 24 27 / 0.04);
+  --shadow-sm: 0 1px 3px rgb(24 24 27 / 0.06), 0 1px 2px rgb(24 24 27 / 0.04);
+  --shadow-md: 0 4px 14px -2px rgb(24 24 27 / 0.08), 0 2px 6px -2px rgb(24 24 27 / 0.05);
+  --shadow-lg: 0 20px 50px -12px rgb(24 24 27 / 0.22);
+
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
 
   color-scheme: light;
 }
 
+/* Stage color scale — an ordered, perceptually-progressing categorical set so
+   the funnel reads as a single system. Terminal outcomes get their own hues.
+   `interested` sits before the ramp starts: dimmer than applied, because a
+   docketed role hasn't entered the funnel yet.
+
+   These are the light-mode steps, pitched dark enough to clear 3:1 against the
+   page and to carry white labels on a filled funnel bar. */
+:root {
+  --stage-interested: #94a3b8;
+  --stage-applied: #64748b;
+  --stage-screen: #0284c7;
+  --stage-first-round: #0891b2;
+  --stage-later-round: #6366f1;
+  --stage-final: #8b5cf6;
+  --stage-offer: #16a34a;
+  --stage-rejected: #dc2626;
+  --stage-withdrawn: #78716c;
+  --stage-ghosted: #d97706;
+
+  /* A categorical trio for the one chart that plots three stages side by side.
+     The stage scale itself is an ordered ramp — adjacent steps are meant to sit
+     close, which is wrong for series a reader has to tell apart. Validated with
+     the dataviz palette checker: CVD ΔE 16.1, normal-vision ΔE 17.4, all three
+     above 3:1 on both surfaces. */
+  --chart-1: #4f46e5;
+  --chart-2: #0891b2;
+  --chart-3: #16a34a;
+}
+
+/* The two ways dark mode turns on. Both pull from the same --d-* values. */
 :root[data-theme="dark"] {
-  --bg: #0f1115;
-  --surface: #171a21;
-  --surface-2: #1e222b;
-  --border: #2a2f3a;
-  --text: #e6e8ec;
-  --text-muted: #9aa4b2;
-  --accent: #818cf8;
-  --accent-soft: #221f3d;
+  --bg: var(--d-bg);
+  --surface: var(--d-surface);
+  --surface-2: var(--d-surface-2);
+  --border: var(--d-border);
+  --border-strong: var(--d-border-strong);
+  --text: var(--d-text);
+  --text-muted: var(--d-text-muted);
+  --accent: var(--d-accent);
+  --accent-fill: var(--d-accent-fill);
+  --accent-fill-hover: var(--d-accent-fill-hover);
+  --accent-soft: var(--d-accent-soft);
+  --danger: var(--d-danger);
+  --danger-soft: var(--d-danger-soft);
+  --warning: var(--d-warning);
+  --success: var(--d-success);
+  --scrim: var(--d-scrim);
+  --shadow-xs: var(--d-shadow-xs);
+  --shadow-sm: var(--d-shadow-sm);
+  --shadow-md: var(--d-shadow-md);
+  --shadow-lg: var(--d-shadow-lg);
+  --stage-interested: var(--d-stage-interested);
+  --stage-applied: var(--d-stage-applied);
+  --stage-screen: var(--d-stage-screen);
+  --stage-first-round: var(--d-stage-first-round);
+  --stage-later-round: var(--d-stage-later-round);
+  --stage-final: var(--d-stage-final);
+  --stage-offer: var(--d-stage-offer);
+  --stage-rejected: var(--d-stage-rejected);
+  --stage-withdrawn: var(--d-stage-withdrawn);
+  --stage-ghosted: var(--d-stage-ghosted);
+  --on-stage: var(--d-on-stage);
+  --chart-1: var(--d-chart-1);
+  --chart-2: var(--d-chart-2);
+  --chart-3: var(--d-chart-3);
 
   color-scheme: dark;
 }
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0f1115;
-    --surface: #171a21;
-    --surface-2: #1e222b;
-    --border: #2a2f3a;
-    --text: #e6e8ec;
-    --text-muted: #9aa4b2;
-    --accent: #818cf8;
-    --accent-soft: #221f3d;
+    --bg: var(--d-bg);
+    --surface: var(--d-surface);
+    --surface-2: var(--d-surface-2);
+    --border: var(--d-border);
+    --border-strong: var(--d-border-strong);
+    --text: var(--d-text);
+    --text-muted: var(--d-text-muted);
+    --accent: var(--d-accent);
+    --accent-fill: var(--d-accent-fill);
+    --accent-fill-hover: var(--d-accent-fill-hover);
+    --accent-soft: var(--d-accent-soft);
+    --danger: var(--d-danger);
+    --danger-soft: var(--d-danger-soft);
+    --warning: var(--d-warning);
+    --success: var(--d-success);
+    --scrim: var(--d-scrim);
+    --shadow-xs: var(--d-shadow-xs);
+    --shadow-sm: var(--d-shadow-sm);
+    --shadow-md: var(--d-shadow-md);
+    --shadow-lg: var(--d-shadow-lg);
+    --stage-interested: var(--d-stage-interested);
+    --stage-applied: var(--d-stage-applied);
+    --stage-screen: var(--d-stage-screen);
+    --stage-first-round: var(--d-stage-first-round);
+    --stage-later-round: var(--d-stage-later-round);
+    --stage-final: var(--d-stage-final);
+    --stage-offer: var(--d-stage-offer);
+    --stage-rejected: var(--d-stage-rejected);
+    --stage-withdrawn: var(--d-stage-withdrawn);
+    --stage-ghosted: var(--d-stage-ghosted);
+    --on-stage: var(--d-on-stage);
+    --chart-1: var(--d-chart-1);
+    --chart-2: var(--d-chart-2);
+    --chart-3: var(--d-chart-3);
 
     color-scheme: dark;
   }
 }
+
+/* ============================================================================
+   Base
+   ========================================================================= */
 
 html,
 body,
@@ -53,29 +223,292 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
+  font-family: "Inter Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* cv11: single-storey g/l — steadier at small sizes in a dense UI. */
+  font-feature-settings: "cv11";
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Stage color scale — an ordered, perceptually-progressing categorical set so
-   the funnel reads as a single system. Terminal outcomes get their own hues. */
-:root {
-  --stage-applied: #94a3b8;
-  --stage-screen: #38bdf8;
-  --stage-first-round: #22d3ee;
-  --stage-later-round: #818cf8;
-  --stage-final: #a78bfa;
-  --stage-offer: #22c55e;
-  --stage-rejected: #ef4444;
-  --stage-withdrawn: #a8a29e;
-  --stage-ghosted: #f59e0b;
+/* Headings read tighter than Inter's default at display sizes. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.018em;
 }
 
-@layer utilities {
+/* Figures that get compared column-to-column shouldn't jitter. */
+table,
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* Native controls we don't otherwise restyle still answer to the accent. */
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+progress {
+  accent-color: var(--accent-fill);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* One rule replaces the border-only focus treatment every control used to
+   hand-roll. Pointer clicks stay ring-free; keyboard users always get one. */
+:where(a, button, input, select, textarea, summary, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================================
+   Component primitives
+
+   These live in the `components` layer so any Tailwind utility at the call
+   site still wins (`card p-4`, `btn w-full`, `input text-right`).
+   ========================================================================= */
+
+@layer components {
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* For cards that are themselves a click target (list rows, board cards). */
+  .card-hover {
+    transition: border-color 150ms var(--ease), box-shadow 150ms var(--ease),
+      background-color 150ms var(--ease);
+  }
+  .card-hover:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* --- buttons ----------------------------------------------------------- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    height: 2rem;
+    padding: 0 0.75rem;
+    border-radius: var(--radius-md);
+    border: 1px solid transparent;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 130ms var(--ease), border-color 130ms var(--ease),
+      color 130ms var(--ease), opacity 130ms var(--ease);
+  }
+  .btn:disabled,
+  .btn[aria-disabled="true"] {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+
+  .btn-primary {
+    background: var(--accent-fill);
+    color: var(--on-accent);
+  }
+  .btn-primary:hover {
+    background: var(--accent-fill-hover);
+  }
+
+  .btn-secondary {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .btn-secondary:hover {
+    background: var(--surface-2);
+    border-color: var(--border-strong);
+  }
+
+  .btn-ghost {
+    color: var(--text-muted);
+  }
+  .btn-ghost:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .btn-danger {
+    color: var(--danger);
+  }
+  .btn-danger:hover {
+    background: var(--danger-soft);
+  }
+
+  .btn-sm {
+    height: 1.75rem;
+    padding: 0 0.5rem;
+    font-size: 0.75rem;
+    border-radius: var(--radius-sm);
+  }
+  .btn-lg {
+    height: 2.25rem;
+    padding: 0 1rem;
+    font-size: 0.875rem;
+  }
+
+  /* --- form controls ----------------------------------------------------- */
+  .input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0 0.625rem;
+    height: 2rem;
+    color: var(--text);
+    font-size: 0.8125rem;
+    outline: none;
+    transition: border-color 130ms var(--ease), box-shadow 130ms var(--ease);
+  }
+  .input:hover:not(:focus) {
+    border-color: var(--border-strong);
+  }
+  .input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+  .input::placeholder {
+    color: var(--text-muted);
+  }
+  /* Multi-line and native date/select controls need their own vertical rhythm. */
+  textarea.input {
+    height: auto;
+    padding: 0.5rem 0.625rem;
+    line-height: 1.5;
+  }
+  select.input {
+    padding-right: 0.375rem;
+  }
+
+  /* The quiet inline-edit idiom: invisible until you go looking for it. */
+  .input-quiet {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: 0.125rem 0.25rem;
+    color: inherit;
+    font-size: inherit;
+    outline: none;
+    transition: border-color 130ms var(--ease), background-color 130ms var(--ease);
+  }
+  .input-quiet:hover:not(:focus) {
+    border-color: var(--border);
+    background: var(--surface-2);
+  }
+  .input-quiet:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+  .input-quiet::placeholder {
+    color: var(--text-muted);
+  }
+
+  /* --- small pieces ------------------------------------------------------ */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    border-radius: 9999px;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+  .pill-muted {
+    background: var(--surface-2);
+    color: var(--text-muted);
+  }
+
+  .page-title {
+    font-size: 1.375rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .section-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+  }
+  /* Inside a table the flex box would collapse the cell. */
+  td.empty {
+    display: table-cell;
+  }
+
+  /* Loading placeholder — a calmer stand-in than the word "Loading…". */
+  .skeleton {
+    border-radius: var(--radius-md);
+    background: linear-gradient(
+      90deg,
+      var(--surface-2) 25%,
+      color-mix(in srgb, var(--border) 55%, var(--surface-2)) 37%,
+      var(--surface-2) 63%
+    );
+    background-size: 400% 100%;
+    animation: skeleton-sweep 1.4s ease-in-out infinite;
+  }
+  @keyframes skeleton-sweep {
+    from {
+      background-position: 100% 50%;
+    }
+    to {
+      background-position: 0 50%;
+    }
+  }
+
+  /* Overlay entrance, used by the one modal. */
+  .animate-scrim {
+    animation: fade-in 140ms var(--ease);
+  }
+  .animate-panel {
+    animation: panel-in 180ms var(--ease);
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.985);
+    }
   }
 }

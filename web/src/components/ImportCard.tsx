@@ -11,10 +11,11 @@ const TARGET_FIELDS: [string, string, boolean][] = [
   ["dateApplied", "Date applied", false],
   ["currentStage", "Current stage", false],
   ["location", "Location", false],
+  ["workMode", "Work mode", false],
   ["salaryMin", "Salary min", false],
   ["salaryMax", "Salary max", false],
-  ["contactName", "Contact name", false],
-  ["referralSource", "Referral source", false],
+  ["salaryPeriod", "Salary period", false],
+  ["contactName", "Referred by", false],
   ["notes", "Notes", false],
 ];
 
@@ -104,14 +105,14 @@ export function ImportCard() {
                   <label key={field} className="flex items-center justify-between gap-2 text-sm">
                     <span className="text-[var(--text-muted)]">
                       {label}
-                      {required && <span className="text-red-500"> *</span>}
+                      {required && <span className="text-[var(--danger)]"> *</span>}
                     </span>
                     <select
                       value={mapping[field] ?? ""}
                       onChange={(e) =>
                         setMapping((m) => ({ ...m, [field]: e.target.value }))
                       }
-                      className="w-40 rounded-lg border border-[var(--border)] bg-white px-2 py-1 text-sm outline-none focus:border-[var(--accent)]"
+                      className="input w-40"
                     >
                       <option value="">— none —</option>
                       {headers.map((h) => (
@@ -128,7 +129,7 @@ export function ImportCard() {
                 <button
                   onClick={run}
                   disabled={!ready || importCsv.isPending}
-                  className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  className="btn btn-primary btn-lg"
                 >
                   {importCsv.isPending ? "Importing…" : "Import"}
                 </button>
@@ -148,7 +149,7 @@ export function ImportCard() {
                 {result.imported === 1 ? "" : "s"}.
               </div>
               {result.errors.length > 0 && (
-                <ul className="mt-2 list-inside list-disc text-xs text-red-600">
+                <ul className="mt-2 list-inside list-disc text-xs text-[var(--danger)]">
                   {result.errors.slice(0, 8).map((e, i) => (
                     <li key={i}>{e}</li>
                   ))}

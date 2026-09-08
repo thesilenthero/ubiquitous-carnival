@@ -3,21 +3,24 @@ import { useSettings } from "../api";
 import {
   DEFAULT_STALE_DAYS,
   FUNNEL_STAGES,
+  PRE_STAGES,
   STAGE_COLORS,
   STAGE_LABELS,
   TERMINAL_STAGES,
+  daysInStage,
+  isStale,
   type Application,
   type Stage,
 } from "../types";
-import { daysBetween } from "../lib/format";
 
-// Kanban view of the pipeline. One column per funnel stage plus a single
-// "Closed" column that groups the terminal exits — nine separate columns
-// would be unusable. Dropping a card on a column APPENDS a stage event via
-// the same mutation the table's picker uses; dropping on Closed asks which
-// terminal stage to record.
+// Kanban view of the pipeline. The docket column, then one per funnel stage,
+// then a single "Closed" column that groups the terminal exits — ten separate
+// columns would be unusable. Dropping a card on a column APPENDS a stage event
+// via the same mutation the table's picker uses; dropping on Closed asks which
+// terminal stage to record. Dragging out of the docket onto Applied is the
+// "I sent it" gesture, and the server corrects the date when it lands.
 type Column = Stage | "closed";
-const COLUMNS: Column[] = [...FUNNEL_STAGES, "closed"];
+const COLUMNS: Column[] = [...PRE_STAGES, ...FUNNEL_STAGES, "closed"];
 
 const isTerminal = (s: Stage) =>
   (TERMINAL_STAGES as readonly string[]).includes(s);
@@ -75,7 +78,7 @@ export function Board({
               }}
               onDragLeave={() => setDragOver((c) => (c === col ? null : c))}
               onDrop={(e) => drop(col, e)}
-              className={`w-60 shrink-0 rounded-xl border p-2 transition ${
+              className={`w-60 shrink-0 rounded-[var(--radius-lg)] border p-2 transition-colors duration-150 ${
                 dragOver === col
                   ? "border-[var(--accent)] bg-[var(--accent-soft)]"
                   : "border-[var(--border)] bg-[var(--surface-2)]"
@@ -143,14 +146,14 @@ function Card({
   staleDays: number;
   onOpen: () => void;
 }) {
-  const days = Math.max(0, daysBetween(app.stageChangedAt));
-  const stale = !isTerminal(app.currentStage) && days > staleDays;
+  const days = daysInStage(app);
+  const stale = isStale(app, staleDays);
   return (
     <div
       draggable
       onDragStart={(e) => e.dataTransfer.setData("text/plain", app.id)}
       onClick={onOpen}
-      className="cursor-grab rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2.5 shadow-sm transition hover:border-[var(--accent)] active:cursor-grabbing"
+      className="card card-hover cursor-grab p-2.5 active:cursor-grabbing active:scale-[0.99]"
     >
       <div className="text-sm font-medium">{app.company}</div>
       <div className="truncate text-xs text-[var(--text-muted)]">
@@ -158,18 +161,18 @@ function Card({
       </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-1">
         {isTerminal(app.currentStage) && (
-          <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">
+          <span className="pill pill-muted">
             {STAGE_LABELS[app.currentStage]}
           </span>
         )}
         {app.roleType && (
-          <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">
+          <span className="pill pill-muted">
             {app.roleType}
           </span>
         )}
         <span
           className={`ml-auto text-[10px] ${
-            stale ? "font-semibold text-amber-500" : "text-[var(--text-muted)]"
+            stale ? "font-semibold text-[var(--warning)]" : "text-[var(--text-muted)]"
           }`}
           title={stale ? `No movement in ${days} days` : undefined}
         >

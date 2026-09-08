@@ -5,11 +5,17 @@ stored values fall back to the default.
 """
 import sqlite3
 
+from . import activity
+
 # key -> (default, min, max)
 NUMERIC_SETTINGS: dict[str, tuple[float, float, float]] = {
     "weeklyTarget": (10, 1, 200),  # applications-per-week goal
     "staleDays": (14, 1, 365),     # Pipeline amber marker: early heads-up
     "quietDays": (30, 1, 365),     # Follow-ups "Gone quiet": time-to-ghost nudge
+    # Analytics screen rate: how long an application must have been out before
+    # a silence from it counts as "no screen". Below this it is still pending,
+    # not a miss, so it stays out of the denominator entirely.
+    "screenWindowDays": (14, 1, 365),
 }
 
 
@@ -35,6 +41,7 @@ def get_settings(conn: sqlite3.Connection) -> dict:
 
 
 def update_settings(conn: sqlite3.Connection, patch: dict) -> dict:
+    before = get_settings(conn)
     for key in NUMERIC_SETTINGS:
         if key in patch and patch[key] is not None:
             conn.execute(
@@ -42,4 +49,14 @@ def update_settings(conn: sqlite3.Connection, patch: dict) -> dict:
                    ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
                 (key, str(patch[key])),
             )
-    return get_settings(conn)
+    after = get_settings(conn)
+    changes = activity.diff(before, after, NUMERIC_SETTINGS)
+    if changes:
+        # Worth logging because these thresholds move the numbers: a stale-days
+        # change makes the Pipeline read differently with no data behind it.
+        activity.record(
+            conn, "settings", "settings", activity.UPDATED,
+            summary="Changed " + ", ".join(sorted(changes)),
+            changes=changes,
+        )
+    return after

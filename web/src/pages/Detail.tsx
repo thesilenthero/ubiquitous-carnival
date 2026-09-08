@@ -4,24 +4,27 @@ import {
   useApplication,
   useAddInterview,
   useDeleteInterview,
-  useDeleteResume,
   useDeleteStageEvent,
   useSetStage,
   useUpdateApplication,
   useUpdateInterview,
   useUpdateStageEvent,
-  useUploadResume,
 } from "../api";
 import {
   ALL_STAGES,
   INDUSTRIES,
   INTERVIEW_FORMATS,
   ROLE_TYPES,
+  SALARY_PERIODS,
+  SALARY_PERIOD_LABELS,
   SOURCES,
   STAGE_COLORS,
   STAGE_LABELS,
+  WORK_MODES,
+  WORK_MODE_LABELS,
   type Application,
   type Interview,
+  type SalaryPeriod,
   type Stage,
 } from "../types";
 import {
@@ -34,7 +37,10 @@ import {
   NumBox,
 } from "../components/fields";
 import { StageBadge } from "../components/StageBadge";
-import { daysBetween, fmtBytes, fmtDate } from "../lib/format";
+import { AttachmentSection } from "../components/AttachmentSection";
+import { ContactPicker } from "../components/ContactPicker";
+import { Skeleton } from "../components/Skeleton";
+import { daysBetween, fmtDate, isoFromDate, todayIso } from "../lib/format";
 import {
   DIMENSIONS,
   REJECT_FLAGS,
@@ -42,11 +48,6 @@ import {
   VERDICT_COLORS,
   type Evaluation as EvaluationSnapshot,
 } from "../lib/evaluation";
-
-// User-entered dates are stored at noon UTC so the calendar day never shifts
-// when displayed in a negative-offset timezone.
-const isoFromDate = (d: string) => new Date(d + "T12:00:00.000Z").toISOString();
-const todayStr = () => new Date().toISOString().slice(0, 10);
 
 export default function Detail() {
   const { id } = useParams();
@@ -60,21 +61,19 @@ export default function Detail() {
 
   const [newStage, setNewStage] = useState<Stage>("screen");
   const [stageNote, setStageNote] = useState("");
-  const [stageDate, setStageDate] = useState(todayStr());
+  const [stageDate, setStageDate] = useState(todayIso());
   const [showJd, setShowJd] = useState(false);
-  const [showResume, setShowResume] = useState(false);
-  const upload = useUploadResume();
-  const removeResume = useDeleteResume();
 
-  function onPickResume(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    // Reset the input so picking the same file twice still fires a change.
-    e.target.value = "";
-    if (!file || !app) return;
-    upload.mutate({ id: app.id, file });
-  }
-
-  if (isLoading) return <p className="text-[var(--text-muted)]">Loading…</p>;
+  if (isLoading)
+    return (
+      <div role="status" aria-label="Loading application" className="max-w-3xl">
+        <Skeleton className="mb-6 h-16 w-72" />
+        <div className="grid gap-4 md:grid-cols-2">
+          <Skeleton className="h-56" />
+          <Skeleton className="h-56" />
+        </div>
+      </div>
+    );
   if (!app) return <p>Application not found.</p>;
 
   const save = (patch: Partial<Application>) =>
@@ -94,11 +93,13 @@ export default function Detail() {
       </Link>
 
       <header className="mt-3 mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
+        {/* -ml-1 cancels the edit affordance's own padding so the heading
+            starts on the page's left edge like every other page title. */}
+        <div className="-ml-1 min-w-0">
           <EditableText
             value={app.company}
             onSave={(v) => save({ company: v })}
-            className="text-2xl font-bold tracking-tight"
+            className="page-title"
           />
           <EditableText
             value={app.roleTitle}
@@ -142,40 +143,62 @@ export default function Detail() {
               value={app.location ?? ""}
               onSave={(v) => save({ location: v })}
             />
+            <FieldSelect
+              label="Work mode"
+              value={app.workMode}
+              options={WORK_MODES}
+              labels={WORK_MODE_LABELS}
+              onSave={(v) => save({ workMode: v })}
+            />
             <div className="flex items-center justify-between">
-              <dt className="text-[var(--text-muted)]">Remote</dt>
-              <dd>
-                <input
-                  type="checkbox"
-                  checked={app.remote}
-                  onChange={(e) => save({ remote: e.target.checked })}
-                />
-              </dd>
-            </div>
-            <div className="flex items-center justify-between">
-              <dt className="text-[var(--text-muted)]">Salary</dt>
+              <dt className="text-[var(--text-muted)]">
+                {app.salaryPeriod === "hour" ? "Rate" : "Salary"}
+              </dt>
               <dd className="flex items-center gap-1">
                 <NumBox
                   value={app.salaryMin}
+                  step={app.salaryPeriod === "hour" ? "0.01" : "1"}
                   onSave={(v) => save({ salaryMin: v })}
                 />
                 <span className="text-[var(--text-muted)]">–</span>
                 <NumBox
                   value={app.salaryMax}
+                  step={app.salaryPeriod === "hour" ? "0.01" : "1"}
                   onSave={(v) => save({ salaryMax: v })}
+                />
+                {/* Right next to the figures, because the same number means
+                    very different things under the two periods. */}
+                <select
+                  value={app.salaryPeriod}
+                  onChange={(e) =>
+                    save({ salaryPeriod: e.target.value as SalaryPeriod })
+                  }
+                  className="input-quiet text-xs text-[var(--text-muted)]"
+                >
+                  {SALARY_PERIODS.map((p) => (
+                    <option key={p} value={p}>
+                      {SALARY_PERIOD_LABELS[p]}
+                    </option>
+                  ))}
+                </select>
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="shrink-0 text-[var(--text-muted)]">Referred by</dt>
+              <dd className="min-w-0 flex-1 text-right">
+                <ContactPicker
+                  className="input-quiet w-full text-right"
+                  name={app.contactName ?? ""}
+                  contactId={app.contactId ?? ""}
+                  onCommit={(name, contactId) =>
+                    save({
+                      contactName: name.trim() || null,
+                      contactId: contactId || null,
+                    })
+                  }
                 />
               </dd>
             </div>
-            <FieldEdit
-              label="Contact"
-              value={app.contactName ?? ""}
-              onSave={(v) => save({ contactName: v })}
-            />
-            <FieldEdit
-              label="Referral source"
-              value={app.referralSource ?? ""}
-              onSave={(v) => save({ referralSource: v })}
-            />
             <FieldOptional
               label="Industry"
               value={app.industry}
@@ -200,7 +223,7 @@ export default function Detail() {
             defaultValue={app.nextAction ?? ""}
             onBlur={(e) => save({ nextAction: e.target.value })}
             placeholder="e.g. Send thank-you note"
-            className="mb-3 w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            className="input mb-3 w-full"
           />
           <label className="mb-1 block text-xs text-[var(--text-muted)]">
             Next action date
@@ -209,7 +232,7 @@ export default function Detail() {
             type="date"
             defaultValue={app.nextActionDate ?? ""}
             onChange={(e) => save({ nextActionDate: e.target.value || null })}
-            className="w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            className="input w-full"
           />
 
           <h3 className="mb-2 mt-5 text-sm font-semibold">Notes</h3>
@@ -218,7 +241,7 @@ export default function Detail() {
             onBlur={(e) => save({ notes: e.target.value })}
             rows={4}
             placeholder="Free-text notes…"
-            className="w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            className="input w-full"
           />
         </section>
       </div>
@@ -251,122 +274,23 @@ export default function Detail() {
             onBlur={(e) => save({ jobDescription: e.target.value || null })}
             rows={10}
             placeholder="Paste the posting text here — postings get taken down fast, and this preserves what you actually applied to."
-            className="mt-3 w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            className="input mt-3 w-full"
           />
         )}
       </section>
 
-      {/* Resume — the exact PDF that went out, plus its text for search/export. */}
-      <section className="card mt-4 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <h3 className="text-sm font-semibold">Resume</h3>
-          {app.resumeFilename ? (
-            <div className="flex items-center gap-2">
-              <a
-                href={`/api/applications/${app.id}/resume`}
-                download
-                className="rounded-lg border border-[var(--border)] px-2.5 py-1 text-xs font-medium hover:bg-[var(--surface-2)]"
-                title="Download the PDF you attached"
-              >
-                ↓ Download
-              </a>
-              <label
-                className="cursor-pointer rounded-lg border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
-                title="Attach a different PDF in its place"
-              >
-                {upload.isPending ? "Uploading…" : "Replace"}
-                <input
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  className="hidden"
-                  onChange={onPickResume}
-                />
-              </label>
-            </div>
-          ) : (
-            <label className="cursor-pointer rounded-lg bg-[var(--accent)] px-2.5 py-1 text-xs font-semibold text-white hover:opacity-90">
-              {upload.isPending ? "Uploading…" : "Attach PDF"}
-              <input
-                type="file"
-                accept="application/pdf,.pdf"
-                className="hidden"
-                onChange={onPickResume}
-              />
-            </label>
-          )}
-        </div>
-
-        {app.resumeFilename && (
-          <div className="mt-2 flex items-center gap-2 text-xs text-[var(--text-muted)]">
-            <span className="truncate">{app.resumeFilename}</span>
-            <span>·</span>
-            <span>{fmtBytes(app.resumeSize)}</span>
-            {app.resumeUploadedAt && (
-              <>
-                <span>·</span>
-                <span>attached {fmtDate(app.resumeUploadedAt)}</span>
-              </>
-            )}
-            <button
-              onClick={() => {
-                if (confirm("Remove the attached PDF? The archived text is kept."))
-                  removeResume.mutate(app.id);
-              }}
-              className="ml-auto shrink-0 text-xs text-red-600 hover:underline"
-            >
-              Remove
-            </button>
-          </div>
-        )}
-
-        {upload.isError && (
-          <p className="mt-2 text-xs text-[var(--stage-rejected)]">
-            {(upload.error as Error).message}
-          </p>
-        )}
-        {app.resumeFilename && !app.resumeText && !upload.isPending && (
-          <p className="mt-2 text-xs text-[var(--text-muted)]">
-            No text layer found in that PDF, so nothing was archived as text —
-            the file itself is stored and downloadable. Paste the text below if
-            you want it in the CSV export.
-          </p>
-        )}
-
-        <button
-          onClick={() => setShowResume((s) => !s)}
-          title="The resume text, used for search and included in the CSV export"
-          className="mt-3 flex w-full items-center justify-between text-left"
-        >
-          <span className="text-xs font-medium text-[var(--text-muted)]">
-            Archived text
-          </span>
-          <span className="text-xs text-[var(--text-muted)]">
-            {app.resumeText
-              ? `${app.resumeText.length.toLocaleString()} chars · ${showResume ? "hide" : "show"}`
-              : showResume
-                ? "hide"
-                : "add"}
-          </span>
-        </button>
-        {showResume && (
-          <textarea
-            defaultValue={app.resumeText ?? ""}
-            onBlur={(e) => save({ resumeText: e.target.value || null })}
-            rows={10}
-            placeholder="Extracted automatically when you attach a PDF — or paste it here."
-            className="mt-2 w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
-          />
-        )}
-      </section>
+      {/* The two documents that went out, each with its archived text. */}
+      <AttachmentSection app={app} kind="resume" />
+      <AttachmentSection app={app} kind="cover-letter" />
 
       {/* Interview rounds — stubs auto-created by interview-type stage events. */}
       <section className="card mt-4 p-4">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Interviews</h3>
           <button
-            onClick={() => addInterview.mutate({ id: app.id, date: todayStr() })}
+            onClick={() => addInterview.mutate({ id: app.id, date: todayIso() })}
             title="Add a round manually — interview-type stage events below create one automatically"
-            className="rounded-lg border border-[var(--border)] px-2.5 py-1 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
+            className="btn btn-secondary btn-sm"
           >
             + Add round
           </button>
@@ -402,7 +326,7 @@ export default function Detail() {
             <select
               value={newStage}
               onChange={(e) => setNewStage(e.target.value as Stage)}
-              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+              className="input"
             >
               {ALL_STAGES.map((s) => (
                 <option key={s} value={s}>
@@ -419,14 +343,14 @@ export default function Detail() {
               type="date"
               value={stageDate}
               onChange={(e) => setStageDate(e.target.value)}
-              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+              className="input"
             />
           </div>
           <input
             placeholder="Optional note"
             value={stageNote}
             onChange={(e) => setStageNote(e.target.value)}
-            className="flex-1 rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            className="input flex-1"
           />
           <button
             onClick={() => {
@@ -437,10 +361,10 @@ export default function Detail() {
                 occurredAt: isoFromDate(stageDate),
               });
               setStageNote("");
-              setStageDate(todayStr());
+              setStageDate(todayIso());
             }}
             title="Append this transition to the history — it never overwrites"
-            className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white"
+            className="btn btn-primary btn-lg"
           >
             Add
           </button>
@@ -455,7 +379,7 @@ export default function Detail() {
             return (
               <li key={e.id} className="mb-4 ml-4">
                 <span
-                  className="absolute -left-[7px] mt-1 h-3 w-3 rounded-full border-2 border-white"
+                  className="absolute -left-[7px] mt-1 h-3 w-3 rounded-full border-2 border-[var(--surface)]"
                   style={{ background: STAGE_COLORS[e.stage] }}
                 />
                 <div className="flex items-center justify-between">
@@ -464,7 +388,7 @@ export default function Detail() {
                     onClick={() =>
                       delEvent.mutate({ id: app.id, eventId: e.id })
                     }
-                    className="text-xs text-[var(--text-muted)] hover:text-red-600"
+                    className="text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
                     title="Delete event"
                   >
                     ✕
@@ -482,7 +406,7 @@ export default function Detail() {
                         occurredAt: isoFromDate(ev.target.value),
                       })
                     }
-                    className="rounded border border-transparent px-1 py-0.5 text-[var(--text-muted)] outline-none hover:border-[var(--border)] focus:border-[var(--accent)]"
+                    className="input-quiet text-[var(--text-muted)]"
                     title="Edit stage date"
                   />
                   {durationDays !== null && (
@@ -505,7 +429,7 @@ export default function Detail() {
               );
             }
           }}
-          className="text-xs text-red-600 hover:underline"
+          className="text-xs text-[var(--danger)] hover:underline"
         >
           Delete permanently
         </button>
@@ -532,7 +456,7 @@ function EvaluationPanel({ evaluation: e }: { evaluation: EvaluationSnapshot }) 
           </span>
           {verdict && (
             <span
-              className="rounded-full px-3 py-1 text-xs font-semibold text-white"
+              className="rounded-full px-3 py-1 text-xs font-semibold text-[var(--on-stage)]"
               style={{ background: VERDICT_COLORS[e.verdict] }}
             >
               {verdict.label}
@@ -601,8 +525,9 @@ function EvaluationPanel({ evaluation: e }: { evaluation: EvaluationSnapshot }) 
   );
 }
 
-// One interview round: date + format on the first line, then interviewers,
-// questions asked, and retro notes — all inline-editable.
+// One interview round: date + format on the first line, then interviewers and
+// one notes field — questions asked, prep and retro together, because that is
+// how a conversation gets written down. All inline-editable.
 function InterviewCard({
   appId,
   interview: iv,
@@ -616,7 +541,7 @@ function InterviewCard({
     updateInterview.mutate({ id: appId, interviewId: iv.id, patch: p });
 
   const inputCls =
-    "rounded border border-transparent px-1 py-0.5 outline-none hover:border-[var(--border)] focus:border-[var(--accent)]";
+    "input-quiet";
 
   return (
     <div className="rounded-lg border border-[var(--border)] p-3">
@@ -650,7 +575,7 @@ function InterviewCard({
           onClick={() =>
             deleteInterview.mutate({ id: appId, interviewId: iv.id })
           }
-          className="ml-auto text-xs text-[var(--text-muted)] hover:text-red-600"
+          className="ml-auto text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
           title="Delete round"
         >
           ✕
@@ -666,23 +591,13 @@ function InterviewCard({
         className={`mb-2 w-full text-sm ${inputCls}`}
       />
       <textarea
-        defaultValue={iv.questions ?? ""}
-        onBlur={(e) =>
-          e.target.value !== (iv.questions ?? "") &&
-          patch({ questions: e.target.value || null })
-        }
-        rows={2}
-        placeholder="Questions asked — builds your personal question bank…"
-        className={`mb-2 w-full text-sm ${inputCls}`}
-      />
-      <textarea
         defaultValue={iv.notes ?? ""}
         onBlur={(e) =>
           e.target.value !== (iv.notes ?? "") &&
           patch({ notes: e.target.value || null })
         }
-        rows={2}
-        placeholder="Prep notes / retro — what went well, what to improve…"
+        rows={4}
+        placeholder="Questions asked, prep, retro — what came up, what went well, what to improve…"
         className={`w-full text-sm ${inputCls}`}
       />
     </div>

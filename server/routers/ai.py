@@ -55,7 +55,10 @@ async def parse_posting(request: Request):
     # degraded, but better than an empty form, so this is a success not a 503.
     if not ai.is_configured():
         return {
-            "fields": {**{k: None for k in extract.ExtractedFields.model_fields}, **hints},
+            "fields": {
+                **{k: None for k in extract.ExtractedFields.model_fields},
+                **postings.fields_from_hints(hints),
+            },
             "jobDescription": text,
             "source": source,
             "aiUsed": False,

@@ -1,30 +1,58 @@
-import { useState } from "react";
-import { useCreateApplication, useUploadResume } from "../api";
-import { INDUSTRIES, ROLE_TYPES, SOURCES, classifyRoleType } from "../types";
-import type { FetchedPosting } from "../types";
+import { useEffect, useState } from "react";
+import { useCreateApplication, useUploadAttachment } from "../api";
+import {
+  DEFAULT_SALARY_PERIOD,
+  DEFAULT_SOURCE,
+  DEFAULT_WORK_MODE,
+  INDUSTRIES,
+  ROLE_TYPES,
+  SALARY_PERIODS,
+  SALARY_PERIOD_LABELS,
+  SOURCES,
+  WORK_MODES,
+  WORK_MODE_LABELS,
+  classifyRoleType,
+} from "../types";
+import type { FetchedPosting, SalaryPeriod, WorkMode } from "../types";
 import { AutofillPosting } from "./AutofillPosting";
+import { ContactPicker } from "./ContactPicker";
+import { todayIso } from "../lib/format";
 
-const inputCls =
-  "w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]";
+const inputCls = "input w-full";
 const labelCls = "mb-1 block text-xs font-medium text-[var(--text-muted)]";
 
 // One short form to add an application. Only company + role are required, so the
 // common case is: type two fields, hit Enter, done — faster than a spreadsheet row.
 export function NewApplicationModal({ onClose }: { onClose: () => void }) {
   const create = useCreateApplication();
-  const upload = useUploadResume();
+  const uploadResume = useUploadAttachment("resume");
+  const uploadCoverLetter = useUploadAttachment("cover-letter");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [coverLetterFile, setCoverLetterFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  // Applied by default. "On the docket" seeds an `interested` event instead, so
+  // the row is tracked without claiming anything was sent.
+  const [onDocket, setOnDocket] = useState(false);
+  // Escape closes, the same as clicking the scrim.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   const [form, setForm] = useState({
     company: "",
     roleTitle: "",
-    source: "Indeed",
-    dateApplied: new Date().toISOString().slice(0, 10),
-    location: "",
-    remote: true,
+    source: DEFAULT_SOURCE as string,
+    dateApplied: todayIso(),
+    // Where you actually search. Autofill overwrites it whenever a posting
+    // states its own location, so this only stands for hand-entered rows.
+    location: "Toronto",
+    workMode: DEFAULT_WORK_MODE as WorkMode,
     salaryMin: "",
     salaryMax: "",
+    salaryPeriod: DEFAULT_SALARY_PERIOD as SalaryPeriod,
     contactName: "",
-    referralSource: "",
+    contactId: "",
     industry: "",
     roleType: "",
     jobUrl: "",
@@ -33,6 +61,7 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
     notes: "",
   });
   const set = (k: string, v: unknown) => setForm((f) => ({ ...f, [k]: v }));
+  const hourly = form.salaryPeriod === "hour";
 
   // Merge an autofill result in. Only fields the posting actually established
   // are written — anything the board left blank keeps whatever is in the form,
@@ -43,9 +72,10 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
       if (fields.company) next.company = fields.company;
       if (fields.roleTitle) next.roleTitle = fields.roleTitle;
       if (fields.location) next.location = fields.location;
-      if (fields.remote !== null) next.remote = fields.remote;
+      if (fields.workMode) next.workMode = fields.workMode;
       if (fields.salaryMin !== null) next.salaryMin = String(fields.salaryMin);
       if (fields.salaryMax !== null) next.salaryMax = String(fields.salaryMax);
+      if (fields.salaryPeriod) next.salaryPeriod = fields.salaryPeriod;
       if (fields.roleType) next.roleType = fields.roleType;
       if (jobDescription) next.jobDescription = jobDescription;
       if (url) next.jobUrl = url;
@@ -56,25 +86,41 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.company.trim() || !form.roleTitle.trim()) return;
+    setUploadError(null);
     const created = await create.mutateAsync({
       ...form,
       salaryMin: form.salaryMin ? Number(form.salaryMin) : null,
       salaryMax: form.salaryMax ? Number(form.salaryMax) : null,
+      contactName: form.contactName.trim() || null,
+      // Empty means the referrer isn't one of your contacts (or there is no
+      // referrer) — send null rather than "", which is not a valid id.
+      contactId: form.contactId || null,
       industry: form.industry || null,
       roleType: form.roleType || null,
       jobUrl: form.jobUrl.trim() || null,
       jobDescription: form.jobDescription.trim() || null,
       resumeText: form.resumeText.trim() || null,
+      initialStage: onDocket ? "interested" : "applied",
+      // Give a docketed role an action so it surfaces in the dated Follow-ups
+      // groups rather than sitting in a list nobody opens.
+      nextAction: onDocket ? "Submit application" : null,
     } as never);
 
-    // The upload needs an id, so it can only happen after the create. If it
-    // fails, the application still exists — say so and leave the modal open
-    // rather than silently dropping either the record or the file.
-    if (resumeFile && created?.id) {
-      try {
-        await upload.mutateAsync({ id: created.id, file: resumeFile });
-      } catch {
-        return;
+    // The uploads need an id, so they can only happen after the create. If one
+    // fails, the application still exists — say which document it was and leave
+    // the modal open rather than silently dropping either the record or the file.
+    if (created?.id) {
+      const pending: [string, File, typeof uploadResume][] = [];
+      if (resumeFile) pending.push(["resume", resumeFile, uploadResume]);
+      if (coverLetterFile)
+        pending.push(["cover letter", coverLetterFile, uploadCoverLetter]);
+      for (const [label, file, mutation] of pending) {
+        try {
+          await mutation.mutateAsync({ id: created.id, file });
+        } catch (err) {
+          setUploadError(`the ${label} didn't attach: ${(err as Error).message}`);
+          return;
+        }
       }
     }
     onClose();
@@ -82,15 +128,32 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/30 p-4 pt-[6vh]"
+      className="animate-scrim fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-[var(--scrim)] p-4 pt-[6vh] backdrop-blur-sm"
       onClick={onClose}
     >
       <form
+        role="dialog"
+        aria-modal="true"
+        aria-label={onDocket ? "Add to docket" : "New application"}
         onClick={(e) => e.stopPropagation()}
         onSubmit={submit}
-        className="card w-full max-w-lg p-5 shadow-xl"
+        className="animate-panel card w-full max-w-lg rounded-[var(--radius-xl)] p-5 shadow-[var(--shadow-lg)]"
       >
-        <h2 className="mb-4 text-lg font-semibold">New application</h2>
+        <h2 className="mb-4 text-base font-semibold tracking-tight">
+          {onDocket ? "Add to docket" : "New application"}
+        </h2>
+
+        <label
+          className="mb-4 flex items-center gap-2 text-sm text-[var(--text-muted)]"
+          title="Track a role you want but haven't applied to yet. It stays out of the funnel and out of analytics until you mark it applied."
+        >
+          <input
+            type="checkbox"
+            checked={onDocket}
+            onChange={(e) => setOnDocket(e.target.checked)}
+          />
+          Haven't applied yet — put it on the docket
+        </label>
 
         <AutofillPosting className="mb-4" onResult={applyParsed} />
 
@@ -134,12 +197,19 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
             </select>
           </div>
           <div>
-            <label className={labelCls}>Date applied</label>
+            <label className={labelCls}>
+              {onDocket ? "Date added" : "Date applied"}
+            </label>
             <input
               type="date"
               className={inputCls}
               value={form.dateApplied}
               onChange={(e) => set("dateApplied", e.target.value)}
+              title={
+                onDocket
+                  ? "A placeholder while the role is on the docket — the real date applied is recorded when you mark it applied"
+                  : undefined
+              }
             />
           </div>
           <div>
@@ -151,50 +221,72 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
               placeholder="Remote / NYC"
             />
           </div>
-          <div className="flex items-end pb-2">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={form.remote}
-                onChange={(e) => set("remote", e.target.checked)}
-              />
-              Remote
-            </label>
+          <div>
+            <label className={labelCls}>Work mode</label>
+            <select
+              className={inputCls}
+              value={form.workMode}
+              onChange={(e) => set("workMode", e.target.value as WorkMode)}
+            >
+              {WORK_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {WORK_MODE_LABELS[m]}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
-            <label className={labelCls}>Salary min</label>
+            <label className={labelCls}>Pay</label>
+            <select
+              className={inputCls}
+              value={form.salaryPeriod}
+              onChange={(e) =>
+                set("salaryPeriod", e.target.value as SalaryPeriod)
+              }
+            >
+              {SALARY_PERIODS.map((p) => (
+                <option key={p} value={p}>
+                  {SALARY_PERIOD_LABELS[p]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>
+              {hourly ? "Rate min" : "Salary min"}
+            </label>
             <input
               type="number"
+              // Contract rates come with cents; annual salaries don't.
+              step={hourly ? "0.01" : "1"}
               className={inputCls}
               value={form.salaryMin}
               onChange={(e) => set("salaryMin", e.target.value)}
-              placeholder="120000"
+              placeholder={hourly ? "60" : "120000"}
             />
           </div>
           <div>
-            <label className={labelCls}>Salary max</label>
+            <label className={labelCls}>
+              {hourly ? "Rate max" : "Salary max"}
+            </label>
             <input
               type="number"
+              step={hourly ? "0.01" : "1"}
               className={inputCls}
               value={form.salaryMax}
               onChange={(e) => set("salaryMax", e.target.value)}
-              placeholder="150000"
+              placeholder={hourly ? "75" : "150000"}
             />
           </div>
-          <div>
-            <label className={labelCls}>Contact name</label>
-            <input
+          <div className="col-span-2">
+            <label className={labelCls}>Referred by</label>
+            <ContactPicker
               className={inputCls}
-              value={form.contactName}
-              onChange={(e) => set("contactName", e.target.value)}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Referral source</label>
-            <input
-              className={inputCls}
-              value={form.referralSource}
-              onChange={(e) => set("referralSource", e.target.value)}
+              name={form.contactName}
+              contactId={form.contactId}
+              onChange={(name, contactId) =>
+                setForm((f) => ({ ...f, contactName: name, contactId }))
+              }
             />
           </div>
           <div>
@@ -260,13 +352,28 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
                 ? `${resumeFile.name} · attaches after the application is created`
                 : "The text is extracted automatically for search and CSV export."}
             </p>
-            {upload.isError && (
-              <p className="mt-1 text-xs text-[var(--stage-rejected)]">
-                Application created, but the PDF didn't attach:{" "}
-                {(upload.error as Error).message}
-              </p>
-            )}
           </div>
+          <div className="col-span-2 sm:col-span-1">
+            <label className={labelCls}>Cover letter (PDF)</label>
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={(e) => setCoverLetterFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-[var(--text-muted)] file:mr-3 file:rounded-lg file:border file:border-[var(--border)] file:bg-[var(--surface-2)] file:px-3 file:py-1.5 file:text-sm file:text-[var(--text)]"
+            />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              {coverLetterFile
+                ? `${coverLetterFile.name} · attaches after the application is created`
+                : "The text is extracted automatically and kept with the application."}
+            </p>
+          </div>
+          {uploadError && (
+            <div className="col-span-2">
+              <p className="text-xs text-[var(--stage-rejected)]">
+                Application created, but {uploadError}
+              </p>
+            </div>
+          )}
           <div className="col-span-2">
             <label className={labelCls}>Notes</label>
             <textarea
@@ -279,7 +386,7 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
         </div>
 
         {create.isError && (
-          <p className="mt-3 text-sm text-red-600">
+          <p className="mt-3 text-sm text-[var(--danger)]">
             {(create.error as Error).message}
           </p>
         )}
@@ -299,7 +406,7 @@ export function NewApplicationModal({ onClose }: { onClose: () => void }) {
               !form.company.trim() ||
               !form.roleTitle.trim()
             }
-            className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            className="btn btn-primary btn-lg"
           >
             {create.isPending ? "Adding…" : "Add application"}
           </button>

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from .. import discovery as store
 from .. import postings
 from ..db import get_db
+from ..domain import is_iso_date
 
 router = APIRouter()
 
@@ -76,11 +77,17 @@ def list_discovered(request: Request, conn: sqlite3.Connection = Depends(get_db)
 
 @router.post("/discovered/{job_id}/{action}")
 def resolve_discovered(
-    job_id: str, action: str, conn: sqlite3.Connection = Depends(get_db)
+    request: Request, job_id: str, action: str, conn: sqlite3.Connection = Depends(get_db)
 ):
-    if action not in ("save", "dismiss", "apply"):
-        return _err(400, "action must be save, dismiss, or apply")
-    job = store.resolve_discovered(conn, job_id, action)
+    if action not in ("save", "dismiss", "docket", "apply"):
+        return _err(400, "action must be save, dismiss, docket, or apply")
+    # The browser sends its own calendar day, because the server's UTC "today"
+    # is already tomorrow for anyone west of Greenwich in the evening — which
+    # would file a role applied to tonight under tomorrow's date.
+    today = request.query_params.get("date")
+    if today is not None and not is_iso_date(today):
+        return _err(400, f"invalid date: {today}")
+    job = store.resolve_discovered(conn, job_id, action, today)
     if not job:
         return _err(404, "Not found")
     return job

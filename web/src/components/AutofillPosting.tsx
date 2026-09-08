@@ -3,7 +3,7 @@ import { useFetchPosting } from "../api";
 import { ATS_SOURCES, type FetchedPosting } from "../types";
 
 const inputCls =
-  "w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]";
+  "input w-full";
 
 const SOURCE_LABELS: Record<FetchedPosting["source"], string> = {
   greenhouse: "Greenhouse",
@@ -80,7 +80,7 @@ export function AutofillPosting({
               }}
               className={`rounded px-2 py-0.5 ${
                 mode === m
-                  ? "bg-[var(--accent)] font-medium text-white"
+                  ? "bg-[var(--accent-fill)] font-medium text-[var(--on-accent)]"
                   : "text-[var(--text-muted)] hover:text-[var(--text)]"
               }`}
             >
@@ -119,7 +119,7 @@ export function AutofillPosting({
           type="button"
           onClick={() => void run()}
           disabled={!value.trim() || fetchPosting.isPending}
-          className="h-fit shrink-0 rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          className="btn btn-primary shrink-0"
         >
           {fetchPosting.isPending ? "Reading…" : "Autofill"}
         </button>

@@ -12,7 +12,7 @@ Mapping (Applications sheet):
   Rejection          -> rejected event    (if date present)
   Status "Dormant/no response" & no rejection -> ghosted event
   Priority + Category + first Response date  -> folded into notes (per user choice)
-  source is left as "other" (the sheet has no application-channel column)
+  source is left as "Other" (the sheet has no application-channel column)
 
 This is destructive: it clears existing applications + stage_events, then loads
 the sheet fresh. Re-run it whenever you re-export the spreadsheet.
@@ -151,13 +151,13 @@ def main() -> None:
 
         cur.execute(
             """INSERT INTO applications
-               (id, company, role_title, source, date_applied, location, remote,
-                salary_min, salary_max, contact_name, referral_source, industry,
+               (id, company, role_title, source, date_applied, location, work_mode,
+                salary_min, salary_max, salary_period, contact_name, industry,
                 role_type, notes, next_action, next_action_date, archived,
                 created_at, updated_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (app_id, str(company).strip(), str(title).strip() if title else "(untitled)",
-             "other", date_str(applied), None, 0, None, None, None, None, industry,
+             "Other", date_str(applied), None, "hybrid", None, None, "year", None, industry,
              role_type, note_text, None, None, 0, iso_at(applied), events[-1][1]),
         )
         for stage, when in events:

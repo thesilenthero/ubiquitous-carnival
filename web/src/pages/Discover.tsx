@@ -10,13 +10,15 @@ import {
 } from "../api";
 import type { DiscoveredStatus } from "../types";
 import { fmtDate } from "../lib/format";
+import { SkeletonRows } from "../components/Skeleton";
 
 const inputCls =
-  "w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]";
+  "input w-full";
 
 const TABS: { key: DiscoveredStatus; label: string }[] = [
   { key: "new", label: "New" },
   { key: "saved", label: "Saved" },
+  { key: "docketed", label: "Docketed" },
   { key: "applied", label: "Applied" },
   { key: "dismissed", label: "Dismissed" },
 ];
@@ -33,9 +35,11 @@ function salaryLabel(min: number | null, max: number | null) {
 // Postings found by polling the ATS boards of employers you're watching.
 //
 // Same contract as the suggestions inbox: this proposes, you decide. Save keeps
-// something shortlisted without touching the pipeline; Apply creates a real
-// application; Dismiss hides it. Nothing is polled until you press Refresh —
-// there is no scheduler, and opening a page shouldn't fire network calls.
+// something shortlisted without touching the pipeline; Docket creates a real
+// application on the docket, so it can carry notes and an evaluation without
+// claiming it was sent; Apply creates one dated today; Dismiss hides it.
+// Nothing is polled until you press Refresh — there is no scheduler, and
+// opening a page shouldn't fire network calls.
 export default function Discover() {
   const { data: boards } = useBoards();
   const createBoard = useCreateBoard();
@@ -74,7 +78,7 @@ export default function Discover() {
     <div className="max-w-3xl">
       <header className="mb-5 flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Discover</h1>
+          <h1 className="page-title">Discover</h1>
           <p className="text-sm text-[var(--text-muted)]">
             New postings from {(boards ?? []).length} watched board
             {(boards ?? []).length === 1 ? "" : "s"} — nothing reaches your
@@ -85,7 +89,7 @@ export default function Discover() {
           onClick={() => refresh.mutate()}
           disabled={refresh.isPending || (boards ?? []).length === 0}
           title="Poll every active board now"
-          className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+          className="btn btn-primary btn-sm shrink-0"
         >
           {refresh.isPending ? "Refreshing…" : "Refresh boards"}
         </button>
@@ -146,7 +150,7 @@ export default function Discover() {
               <button
                 type="submit"
                 disabled={!url.trim() || createBoard.isPending}
-                className="h-fit rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                className="btn btn-primary"
               >
                 {createBoard.isPending ? "Adding…" : "Add board"}
               </button>
@@ -200,7 +204,7 @@ export default function Discover() {
                         )
                           deleteBoard.mutate(b.id);
                       }}
-                      className="text-xs text-red-600 hover:underline"
+                      className="text-xs text-[var(--danger)] hover:underline"
                     >
                       Remove
                     </button>
@@ -229,10 +233,10 @@ export default function Discover() {
         ))}
       </div>
 
-      {isLoading && <p className="text-[var(--text-muted)]">Loading…</p>}
+      {isLoading && <SkeletonRows rows={4} label="Loading postings" />}
 
       {!isLoading && (jobs ?? []).length === 0 && (
-        <div className="card p-10 text-center text-[var(--text-muted)]">
+        <div className="card empty">
           {tab === "new"
             ? (boards ?? []).length === 0
               ? "Add a board above, then hit Refresh to find postings."
@@ -269,7 +273,7 @@ export default function Discover() {
                 {j.status === "applied" && j.applicationId ? (
                   <Link
                     to={`/application/${j.applicationId}`}
-                    className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
+                    className="btn btn-secondary btn-sm"
                   >
                     View application
                   </Link>
@@ -281,15 +285,24 @@ export default function Discover() {
                           resolve.mutate({ id: j.id, action: "save" })
                         }
                         title="Shortlist without adding it to your pipeline"
-                        className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
+                        className="btn btn-secondary btn-sm"
                       >
                         Save
                       </button>
                     )}
                     <button
+                      onClick={() =>
+                        resolve.mutate({ id: j.id, action: "docket" })
+                      }
+                      title="Track it as a role you intend to apply to — it stays out of the funnel and out of analytics until you mark it applied"
+                      className="btn btn-secondary btn-sm"
+                    >
+                      Add to docket
+                    </button>
+                    <button
                       onClick={() => resolve.mutate({ id: j.id, action: "apply" })}
                       title="Create an application dated today and fetch the full description"
-                      className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                      className="btn btn-primary btn-sm"
                     >
                       Apply
                     </button>
@@ -299,7 +312,7 @@ export default function Discover() {
                           resolve.mutate({ id: j.id, action: "dismiss" })
                         }
                         title="Hide it — it won't come back on the next refresh"
-                        className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-2)]"
+                        className="btn btn-secondary btn-sm"
                       >
                         Dismiss
                       </button>

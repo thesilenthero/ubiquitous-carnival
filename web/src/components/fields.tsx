@@ -33,13 +33,13 @@ export function EditableText({
             setEditing(false);
           }
         }}
-        className={`rounded border border-[var(--accent)] px-1 outline-none ${className ?? ""}`}
+        className={`input-quiet border-[var(--accent)] ${className ?? ""}`}
       />
     );
   }
   return (
     <div
-      className={`cursor-text rounded hover:bg-[var(--surface-2)] ${className ?? ""}`}
+      className={`cursor-text rounded-[var(--radius-sm)] px-1 py-0.5 transition-colors duration-150 hover:bg-[var(--surface-2)] ${className ?? ""}`}
       onClick={() => {
         setDraft(value);
         setEditing(true);
@@ -68,23 +68,27 @@ export function FieldEdit({
           defaultValue={value}
           onBlur={(e) => e.target.value !== value && onSave(e.target.value)}
           placeholder="—"
-          className="w-full rounded border border-transparent px-1 py-0.5 text-right outline-none hover:border-[var(--border)] focus:border-[var(--accent)]"
+          className="input-quiet w-full text-right"
         />
       </dd>
     </div>
   );
 }
 
-export function FieldSelect({
+export function FieldSelect<T extends string>({
   label,
   value,
   options,
+  labels,
   onSave,
 }: {
   label: string;
-  value: string;
-  options: readonly string[];
-  onSave: (v: string) => void;
+  value: T;
+  options: readonly T[];
+  /** Display names, when the stored value isn't what you'd want to read
+   *  ("onsite" → "On-site"). Falls back to the value itself. */
+  labels?: Record<T, string>;
+  onSave: (v: T) => void;
 }) {
   // Tolerate a stored value outside the suggestion list (source is free text).
   const merged = options.includes(value) ? options : [value, ...options];
@@ -94,12 +98,12 @@ export function FieldSelect({
       <dd>
         <select
           value={value}
-          onChange={(e) => onSave(e.target.value)}
-          className="rounded border border-transparent px-1 py-0.5 outline-none hover:border-[var(--border)] focus:border-[var(--accent)]"
+          onChange={(e) => onSave(e.target.value as T)}
+          className="input-quiet"
         >
           {merged.map((o) => (
             <option key={o} value={o}>
-              {o}
+              {labels?.[o] ?? o}
             </option>
           ))}
         </select>
@@ -130,7 +134,7 @@ export function FieldOptional({
         <select
           value={value ?? ""}
           onChange={(e) => onSave(e.target.value || null)}
-          className="max-w-[12rem] rounded border border-transparent px-1 py-0.5 outline-none hover:border-[var(--border)] focus:border-[var(--accent)]"
+          className="input-quiet max-w-[12rem]"
         >
           <option value="">—</option>
           {merged.map((o) => (
@@ -162,7 +166,7 @@ export function FieldDate({
           type="date"
           defaultValue={value}
           onChange={(e) => e.target.value && onSave(e.target.value)}
-          className="rounded border border-transparent px-1 py-0.5 outline-none hover:border-[var(--border)] focus:border-[var(--accent)]"
+          className="input-quiet"
         />
       </dd>
     </div>
@@ -204,7 +208,7 @@ export function FieldUrl({
             if (v !== value) onSave(v);
           }}
           placeholder="https://…"
-          className="w-full rounded border border-transparent px-1 py-0.5 text-right outline-none hover:border-[var(--border)] focus:border-[var(--accent)]"
+          className="input-quiet w-full text-right"
         />
       </dd>
     </div>
@@ -214,20 +218,24 @@ export function FieldUrl({
 export function NumBox({
   value,
   onSave,
+  step,
 }: {
   value: number | null;
   onSave: (v: number | null) => void;
+  /** "0.01" for money with cents — the default step of 1 marks $62.50 invalid. */
+  step?: string;
 }) {
   return (
     <input
       type="number"
+      step={step}
       defaultValue={value ?? ""}
       onBlur={(e) => {
         const v = e.target.value ? Number(e.target.value) : null;
         if (v !== value) onSave(v);
       }}
       placeholder="—"
-      className="w-20 rounded border border-transparent px-1 py-0.5 text-right outline-none hover:border-[var(--border)] focus:border-[var(--accent)]"
+      className="input-quiet w-20 text-right"
     />
   );
 }

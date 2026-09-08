@@ -4,20 +4,23 @@ Deliberately shaped like server/suggestions.py: an external process proposes,
 you accept or dismiss, and nothing reaches the pipeline until you say so. The
 difference is what "accept" means — here it creates an application.
 
-`discovered_jobs` is the app's pre-application state. It has to be its own
-table: `applications.date_applied` is NOT NULL and "applied" is the floor of the
-funnel, so a job you haven't applied to cannot live there without corrupting
-every rate metric.
+`discovered_jobs` holds the machine-found pre-application state, and has to be
+its own table: a polled posting is not yet anything you've chosen, and there are
+far more of them than there are roles you care about. Once you do choose one,
+`docket` or `apply` turns it into a real application — docketed rows sit at a
+pre-stage and are excluded from every analytics figure, so an un-applied role
+still cannot corrupt a rate metric.
 
 Nothing here calls conn.commit() — the get_db dependency commits on the way out.
 """
 import sqlite3
 from typing import Optional
 
-from . import postings, repo
+from . import activity, postings, repo
+from .domain import normalize_source
 from .ids import nanoid, now_iso, today_str
 
-STATUSES = ("new", "saved", "dismissed", "applied")
+STATUSES = ("new", "saved", "dismissed", "docketed", "applied")
 
 
 def _map_board(r: sqlite3.Row) -> dict:
@@ -101,11 +104,26 @@ def create_board(conn: sqlite3.Connection, url: str, keywords: str, company: str
             now_iso(),
         ),
     )
-    return _map_board(conn.execute("SELECT * FROM job_boards WHERE id = ?", (bid,)).fetchone())
+    board = _map_board(
+        conn.execute("SELECT * FROM job_boards WHERE id = ?", (bid,)).fetchone()
+    )
+    activity.record(
+        conn, "board", bid, activity.CREATED,
+        summary=f"Started watching {board['company']} ({board['ats']})",
+    )
+    return board
 
 
 def delete_board(conn: sqlite3.Connection, board_id: str) -> bool:
+    row = conn.execute(
+        "SELECT company FROM job_boards WHERE id = ?", (board_id,)
+    ).fetchone()
     cur = conn.execute("DELETE FROM job_boards WHERE id = ?", (board_id,))
+    if cur.rowcount and row:
+        activity.record(
+            conn, "board", board_id, activity.DELETED,
+            summary=f"Stopped watching {row['company']}",
+        )
     return cur.rowcount > 0
 
 
@@ -203,17 +221,25 @@ def list_discovered(conn: sqlite3.Connection, status: str = "new") -> list[dict]
 
 
 def resolve_discovered(
-    conn: sqlite3.Connection, job_id: str, action: str
+    conn: sqlite3.Connection, job_id: str, action: str, today: Optional[str] = None
 ) -> Optional[dict]:
-    """`save` / `dismiss` / `apply`. Returns None if the job doesn't exist."""
+    """`save` / `dismiss` / `docket` / `apply`. None if the job doesn't exist.
+
+    `today` is the caller's calendar day, used as the application date; it falls
+    back to the server's UTC day when the caller doesn't supply one.
+    """
     row = conn.execute("SELECT * FROM discovered_jobs WHERE id = ?", (job_id,)).fetchone()
     if not row:
         return None
 
-    if action == "apply":
+    if action in ("apply", "docket"):
+        # `docket` creates the same application `apply` does, but seeds the log
+        # at `interested` instead — the posting becomes a real tracked row with
+        # notes, attachments and an evaluation, without claiming it was sent.
+        applying = action == "apply"
         # Idempotent, exactly as accept_suggestion is: a second click must not
         # create a second application.
-        if row["status"] == "applied":
+        if row["status"] in ("applied", "docketed"):
             return _map_job(row)
 
         # The description is fetched now rather than at poll time — Workday's
@@ -233,20 +259,24 @@ def resolve_discovered(
             {
                 "company": row["company"],
                 "roleTitle": row["role_title"],
-                "source": (board["ats"] if board else "other"),
-                "dateApplied": today_str(),
+                "source": normalize_source(board["ats"]) if board else None,
+                "dateApplied": today or today_str(),
                 "location": row["location"],
-                "remote": bool(row["remote"]) if row["remote"] is not None else False,
+                # A board that says "remote" means it; one that says otherwise
+                # can't distinguish hybrid from on-site, so let the default stand.
+                "workMode": "remote" if row["remote"] else None,
                 "salaryMin": row["salary_min"],
                 "salaryMax": row["salary_max"],
                 "roleType": row["role_type"],
                 "jobUrl": row["job_url"],
                 "jobDescription": description,
+                "initialStage": None if applying else "interested",
+                "nextAction": None if applying else "Submit application",
             },
         )
         conn.execute(
-            "UPDATE discovered_jobs SET status = 'applied', application_id = ? WHERE id = ?",
-            (app["id"], job_id),
+            "UPDATE discovered_jobs SET status = ?, application_id = ? WHERE id = ?",
+            ("applied" if applying else "docketed", app["id"], job_id),
         )
     elif action in ("save", "dismiss"):
         conn.execute(
@@ -256,6 +286,14 @@ def resolve_discovered(
     else:
         return None
 
+    # Only the act of resolving a posting is logged, never the polling that
+    # found it: one refresh can add hundreds of rows, and burying a week of
+    # real activity under machine finds would defeat the log.
+    activity.record(
+        conn, "posting", job_id, activity.UPDATED,
+        summary=f"{action.capitalize()}d {row['role_title']} at {row['company']}",
+        changes={"status": [row["status"], action]},
+    )
     return _map_job(
         conn.execute("SELECT * FROM discovered_jobs WHERE id = ?", (job_id,)).fetchone()
     )

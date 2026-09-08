@@ -4,10 +4,11 @@ export function StageBadge({ stage }: { stage: Stage }) {
   const color = STAGE_COLORS[stage];
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
+      className="pill"
       style={{
-        background: `color-mix(in srgb, ${color} 20%, var(--surface))`,
-        color: `color-mix(in srgb, ${color} 70%, var(--text))`,
+        background: `color-mix(in srgb, ${color} 16%, var(--surface))`,
+        color: `color-mix(in srgb, ${color} 65%, var(--text))`,
+        boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 22%, transparent)`,
       }}
     >
       <span

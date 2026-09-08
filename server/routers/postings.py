@@ -30,9 +30,10 @@ FIELD_KEYS = (
     "company",
     "roleTitle",
     "location",
-    "remote",
+    "workMode",
     "salaryMin",
     "salaryMax",
+    "salaryPeriod",
     "industry",
     "roleType",
 )
@@ -69,7 +70,10 @@ async def fetch_posting(request: Request):
         text = text[: postings.MAX_TEXT]
 
     return {
-        "fields": {**{k: None for k in FIELD_KEYS}, **hints},
+        "fields": {
+            **{k: None for k in FIELD_KEYS},
+            **postings.fields_from_hints(hints),
+        },
         "jobDescription": text,
         "source": source,
     }

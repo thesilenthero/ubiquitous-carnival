@@ -3,6 +3,8 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
+// Self-hosted so the app keeps its typography offline — no CDN request.
+import "@fontsource-variable/inter";
 import "./index.css";
 
 // A single QueryClient. Mutations invalidate the relevant queries, which is

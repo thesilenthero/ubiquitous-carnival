@@ -4,3 +4,5 @@ openpyxl>=3.1
 anthropic>=0.84
 pypdf>=4.0
 python-multipart>=0.0.9
+google-api-python-client>=2.120
+google-auth>=2.28

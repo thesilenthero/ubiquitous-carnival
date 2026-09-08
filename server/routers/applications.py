@@ -8,9 +8,15 @@ import sqlite3
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
-from .. import repo, resume_files
+from .. import attachment_files, repo
 from ..db import get_db
-from ..domain import is_iso_date, is_iso_timestamp, is_stage
+from ..domain import (
+    is_iso_date,
+    is_iso_timestamp,
+    is_salary_period,
+    is_stage,
+    is_work_mode,
+)
 from ..ids import today_str
 
 router = APIRouter()
@@ -29,6 +35,15 @@ async def _body(request: Request) -> dict:
 
 def _err(status: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
+
+
+def _contact_exists(conn: sqlite3.Connection, contact_id: object) -> bool:
+    if not isinstance(contact_id, str):
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM contacts WHERE id = ?", (contact_id,)
+    ).fetchone()
+    return row is not None
 
 
 def _num_or_null(v):
@@ -82,17 +97,32 @@ async def create_application(
     evaluation = b.get("evaluation")
     if evaluation is not None and not isinstance(evaluation, dict):
         return _err(400, "evaluation must be an object")
+    # Which stage the seed event records. Defaults to `applied`; sending
+    # `interested` creates the row on the docket instead of in the funnel.
+    initial_stage = b.get("initialStage")
+    if initial_stage is not None and not is_stage(initial_stage):
+        return _err(400, f"invalid initialStage: {initial_stage}")
+    work_mode = b.get("workMode")
+    if work_mode is not None and not is_work_mode(work_mode):
+        return _err(400, f"invalid workMode: {work_mode}")
+    salary_period = b.get("salaryPeriod")
+    if salary_period is not None and not is_salary_period(salary_period):
+        return _err(400, f"invalid salaryPeriod: {salary_period}")
+    contact_id = b.get("contactId")
+    if contact_id is not None and not _contact_exists(conn, contact_id):
+        return _err(400, f"unknown contactId: {contact_id}")
     inp = {
         "company": str(b["company"]),
         "roleTitle": str(b["roleTitle"]),
         "source": b.get("source"),
         "dateApplied": b.get("dateApplied") or today_str(),
         "location": b.get("location"),
-        "remote": bool(b.get("remote")),
+        "workMode": work_mode,
         "salaryMin": _num_or_null(b.get("salaryMin")),
         "salaryMax": _num_or_null(b.get("salaryMax")),
+        "salaryPeriod": salary_period,
         "contactName": b.get("contactName"),
-        "referralSource": b.get("referralSource"),
+        "contactId": contact_id,
         "industry": b.get("industry"),
         "roleType": b.get("roleType"),
         "jobUrl": b.get("jobUrl"),
@@ -104,6 +134,7 @@ async def create_application(
         "evalComposite": eval_composite,
         "evalVerdict": eval_verdict,
         "evaluation": evaluation,
+        "initialStage": initial_stage,
     }
     return JSONResponse(repo.create_application(conn, inp), status_code=201)
 
@@ -125,6 +156,17 @@ async def update_application(
         b["salaryMin"] = _num_or_null(b["salaryMin"])
     if "salaryMax" in b:
         b["salaryMax"] = _num_or_null(b["salaryMax"])
+    if "workMode" in b and not is_work_mode(b["workMode"]):
+        return _err(400, f"invalid workMode: {b['workMode']}")
+    if "salaryPeriod" in b and not is_salary_period(b["salaryPeriod"]):
+        return _err(400, f"invalid salaryPeriod: {b['salaryPeriod']}")
+    # Clearing the link is allowed (the referrer isn't in your contacts, or
+    # never was one); pointing it at a contact that doesn't exist is not.
+    if (
+        b.get("contactId") is not None
+        and not _contact_exists(conn, b["contactId"])
+    ):
+        return _err(400, f"unknown contactId: {b['contactId']}")
     updated = repo.update_application(conn, app_id, b)
     if not updated:
         return _err(404, "Not found")
@@ -188,7 +230,7 @@ async def add_interview(
     updated = repo.add_interview(
         conn,
         app_id,
-        {k: b.get(k) for k in ("date", "format", "interviewers", "questions", "notes")},
+        {k: b.get(k) for k in ("date", "format", "interviewers", "notes")},
     )
     if not updated:
         return _err(404, "Not found")
@@ -230,10 +272,114 @@ def delete_application(app_id: str, conn: sqlite3.Connection = Depends(get_db)):
     return Response(status_code=204)
 
 
-# --- Resume attachment ----------------------------------------------------
+# --- PDF attachments ------------------------------------------------------
 #
 # The only multipart routes in the codebase; everything else reads raw JSON.
-# The PDF itself lives on disk (server/resume_files.py), not in the database.
+# The PDFs themselves live on disk (server/attachment_files.py), not in the
+# database. `kind` is "resume" or "cover-letter" and is resolved through the
+# frozen table in attachment_files before it is used for anything.
+
+# The camelCase response key holding the original upload name, per kind. The
+# Kind table carries the snake_case column; this is its _map_app counterpart.
+_FILENAME_KEY = {"resume": "resumeFilename", "cover-letter": "coverLetterFilename"}
+
+
+async def _upload(kind_key: str, app_id: str, file: UploadFile, conn: sqlite3.Connection):
+    """Attach a PDF, replacing any existing one of that kind, and archive its text."""
+    kind = attachment_files.by_key(kind_key)
+    if not kind:
+        return _err(404, "Not found")
+    app = repo.get_application(conn, app_id)
+    if not app:
+        return _err(404, "Not found")
+
+    data = await file.read()
+    if not data:
+        return _err(400, "That file is empty.")
+    if len(data) > attachment_files.MAX_BYTES:
+        mb = attachment_files.MAX_BYTES // (1024 * 1024)
+        return _err(413, f"That file is larger than {mb}MB.")
+    if not attachment_files.looks_like_pdf(data, file.filename or ""):
+        return _err(400, "Only PDF files can be attached.")
+
+    stored_name, size = attachment_files.save(kind, app, data)
+    updated = repo.set_attachment(
+        conn,
+        app_id,
+        kind,
+        stored_name,
+        (file.filename or kind.default_name),
+        size,
+        attachment_files.extract_text(data),
+    )
+    if not updated:
+        # The row vanished between the lookup and the write; don't leave the
+        # file behind for nothing.
+        attachment_files.delete(kind, stored_name)
+        return _err(404, "Not found")
+    return updated
+
+
+def _download(kind_key: str, app_id: str, conn: sqlite3.Connection):
+    kind = attachment_files.by_key(kind_key)
+    if not kind:
+        return _err(404, "Not found")
+    app = repo.get_application(conn, app_id)
+    if not app:
+        return _err(404, "Not found")
+    stored = repo.get_attachment_path(conn, app_id, kind)
+    if not stored:
+        return _err(404, f"No {kind.label} is attached to this application.")
+    try:
+        content = attachment_files.read(kind, stored)
+    except (ValueError, OSError):
+        # Recorded in the database but unreadable on disk — say so plainly
+        # rather than serving a 500.
+        return _err(410, f"The stored {kind.label} file is missing.")
+    filename = app.get(_FILENAME_KEY[kind.key]) or kind.default_name
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _detach(kind_key: str, app_id: str, conn: sqlite3.Connection):
+    kind = attachment_files.by_key(kind_key)
+    if not kind:
+        return _err(404, "Not found")
+    updated = repo.clear_attachment(conn, app_id, kind)
+    if not updated:
+        return _err(404, "Not found")
+    return updated
+
+
+@router.post("/{app_id}/attachments/{kind}")
+async def upload_attachment(
+    app_id: str,
+    kind: str,
+    file: UploadFile = File(...),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    return await _upload(kind, app_id, file, conn)
+
+
+@router.get("/{app_id}/attachments/{kind}")
+def download_attachment(
+    app_id: str, kind: str, conn: sqlite3.Connection = Depends(get_db)
+):
+    return _download(kind, app_id, conn)
+
+
+@router.delete("/{app_id}/attachments/{kind}")
+def delete_attachment(
+    app_id: str, kind: str, conn: sqlite3.Connection = Depends(get_db)
+):
+    return _detach(kind, app_id, conn)
+
+
+# The original resume-only paths, kept so links handed out before attachments
+# were generalized (and the ones in the README) keep working.
 
 
 @router.post("/{app_id}/resume")
@@ -242,62 +388,14 @@ async def upload_resume(
     file: UploadFile = File(...),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Attach a PDF, replacing any existing one, and archive its text."""
-    app = repo.get_application(conn, app_id)
-    if not app:
-        return _err(404, "Not found")
-
-    data = await file.read()
-    if not data:
-        return _err(400, "That file is empty.")
-    if len(data) > resume_files.MAX_BYTES:
-        mb = resume_files.MAX_BYTES // (1024 * 1024)
-        return _err(413, f"That file is larger than {mb}MB.")
-    if not resume_files.looks_like_pdf(data, file.filename or ""):
-        return _err(400, "Only PDF files can be attached.")
-
-    stored_name, size = resume_files.save(app, data)
-    updated = repo.set_resume(
-        conn,
-        app_id,
-        stored_name,
-        (file.filename or "resume.pdf"),
-        size,
-        resume_files.extract_text(data),
-    )
-    if not updated:
-        # The row vanished between the lookup and the write; don't leave the
-        # file behind for nothing.
-        resume_files.delete(stored_name)
-        return _err(404, "Not found")
-    return updated
+    return await _upload("resume", app_id, file, conn)
 
 
 @router.get("/{app_id}/resume")
 def download_resume(app_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    app = repo.get_application(conn, app_id)
-    if not app:
-        return _err(404, "Not found")
-    stored = repo.get_resume_path(conn, app_id)
-    if not stored:
-        return _err(404, "No resume is attached to this application.")
-    try:
-        content = resume_files.read(stored)
-    except (ValueError, OSError):
-        # Recorded in the database but unreadable on disk — say so plainly
-        # rather than serving a 500.
-        return _err(410, "The stored resume file is missing.")
-    filename = app.get("resumeFilename") or "resume.pdf"
-    return Response(
-        content=content,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return _download("resume", app_id, conn)
 
 
 @router.delete("/{app_id}/resume")
 def delete_resume(app_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    updated = repo.clear_resume(conn, app_id)
-    if not updated:
-        return _err(404, "Not found")
-    return updated
+    return _detach("resume", app_id, conn)

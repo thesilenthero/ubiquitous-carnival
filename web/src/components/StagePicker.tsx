@@ -21,7 +21,7 @@ export function StagePicker({
         const next = e.target.value as Stage;
         if (next !== value) onChange(next);
       }}
-      className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-50"
+      className="input disabled:opacity-50"
     >
       {ALL_STAGES.map((s) => (
         <option key={s} value={s}>

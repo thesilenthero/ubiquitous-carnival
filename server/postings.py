@@ -674,6 +674,20 @@ def parse_board_url(url: str) -> dict:
     )
 
 
+def fields_from_hints(hints: dict) -> dict:
+    """Board hints under the field names the application form uses.
+
+    The ATS APIs report a plain remote/not boolean, which is the one thing they
+    agree on. True maps straight to the `remote` work mode; false only rules
+    that mode out — hybrid and on-site are indistinguishable to a board — so it
+    is dropped and the form's own default stands.
+    """
+    fields = {k: v for k, v in hints.items() if k != "remote"}
+    if hints.get("remote"):
+        fields["workMode"] = "remote"
+    return fields
+
+
 def fetch_posting(url: str) -> Posting:
     """Fetch a posting URL, preferring an ATS API when one covers it."""
     parsed = _assert_public_url(url)

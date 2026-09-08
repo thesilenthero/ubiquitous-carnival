@@ -10,7 +10,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from . import ai
-from .domain import classify_role_type
+from .domain import SALARY_PERIODS, WORK_MODES, classify_role_type
 from .evaluation import DIMENSION_KEYS, FLAG_KEYS, flags_text, rubric_text
 
 # Mirrors INDUSTRIES / ROLE_TYPES in web/src/types.ts — the value has to be one
@@ -48,9 +48,13 @@ class ExtractedFields(BaseModel):
     company: Optional[str]
     roleTitle: Optional[str]
     location: Optional[str]
-    remote: Optional[bool]
-    salaryMin: Optional[int]
-    salaryMax: Optional[int]
+    # Free-form on the way out of the model and snapped onto WORK_MODES /
+    # SALARY_PERIODS below. A typed enum here would not actually constrain the
+    # output — see the note on INDUSTRIES further down.
+    workMode: Optional[str]
+    salaryMin: Optional[float]
+    salaryMax: Optional[float]
+    salaryPeriod: Optional[str]
     industry: Optional[str]
     roleType: Optional[str]
 
@@ -73,12 +77,16 @@ You read job postings and pull out the facts a job-application tracker records.
 
 Rules:
 - Report only what the posting states. Leave a field null rather than guessing.
-- salaryMin/salaryMax are annual figures in the posting's own currency, as plain
-  integers (a "$120,000 - $140,000" range is 120000 and 140000). An hourly or
-  monthly rate is not an annual figure — leave both null. A single figure with no
-  range goes in both fields.
-- remote is true only for fully remote roles. Hybrid and on-site are false.
-  Null when the posting doesn't say.
+- salaryMin/salaryMax are the figures as the posting states them, in its own
+  currency, as plain numbers ("$120,000 - $140,000" is 120000 and 140000;
+  "$62.50/hr" is 62.5). A single figure with no range goes in both fields.
+  Do NOT convert between hourly and annual — report the number as written and
+  say which it is in salaryPeriod. A monthly or weekly rate: leave both null.
+- salaryPeriod is "hour" for an hourly or contract rate and "year" for an annual
+  salary. Null when there is no salary at all.
+- workMode is "remote" for fully remote, "hybrid" for any split of home and
+  office (including "3 days on site"), "onsite" for fully in-office. Null when
+  the posting doesn't say — do not infer it from the location line alone.
 - location is the posting's own wording ("Toronto, ON", "Remote - Canada").
 
 industry must be exactly one of these strings, or null:
@@ -117,9 +125,20 @@ def extract_fields(text: str, hints: dict) -> ExtractedFields:
     merged = fields.model_dump()
     merged["industry"] = _coerce(merged.get("industry"), INDUSTRIES)
     merged["roleType"] = _coerce(merged.get("roleType"), ROLE_TYPES)
+    merged["workMode"] = _coerce(merged.get("workMode"), WORK_MODES)
+    merged["salaryPeriod"] = _coerce(merged.get("salaryPeriod"), SALARY_PERIODS)
+    # A rate with no period is ambiguous ($65 vs $65,000), and the size of the
+    # number is the only honest signal left. Full-time salaries do not run to
+    # three digits, and contract rates do not run to five.
+    if merged.get("salaryPeriod") is None and merged.get("salaryMin") is not None:
+        merged["salaryPeriod"] = "hour" if merged["salaryMin"] < 1000 else "year"
     for key, value in hints.items():
         if value is not None and key in merged:
             merged[key] = value
+    # The boards report a plain remote/not boolean. True is unambiguous; false
+    # only rules out fully-remote, so it is dropped rather than guessed at.
+    if hints.get("remote"):
+        merged["workMode"] = "remote"
     # Same fallback the New-application form applies on blur.
     if not merged.get("roleType") and merged.get("roleTitle"):
         merged["roleType"] = classify_role_type(merged["roleTitle"])

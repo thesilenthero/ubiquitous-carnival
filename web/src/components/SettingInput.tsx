@@ -55,7 +55,7 @@ export function SettingInput({
       }}
       className={
         className ??
-        "w-14 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-right outline-none focus:border-[var(--accent)]"
+        "input w-14 px-1.5 text-right text-xs"
       }
     />
   );

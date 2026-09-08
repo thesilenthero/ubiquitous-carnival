@@ -5,6 +5,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Legend,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -15,16 +16,28 @@ import { useState } from "react";
 import { useAnalytics, useUpdateSettings, type AnalyticsRange } from "../api";
 import { SettingInput } from "../components/SettingInput";
 import { STAGE_COLORS, STAGE_LABELS, type Stage } from "../types";
-import { fmtDate, pct } from "../lib/format";
+import { fmtDate, pct, todayIso } from "../lib/format";
 import { ImportCard } from "../components/ImportCard";
+import { SheetsCard } from "../components/SheetsCard";
+import { Skeleton } from "../components/Skeleton";
 
 // Themed tooltip so it isn't a white box in dark mode.
 const TOOLTIP_STYLE = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
-  borderRadius: 8,
+  borderRadius: "var(--radius-md)",
+  boxShadow: "var(--shadow-md)",
   color: "var(--text)",
+  fontSize: 12,
 };
+
+// Series identity is never colour alone — the legend names every series, and
+// legend text wears the muted ink token rather than the series colour.
+const LEGEND_STYLE = { fontSize: 11, color: "var(--text-muted)" };
+
+// Grid and axes stay recessive so the marks carry the reading.
+const GRID_STROKE = "color-mix(in srgb, var(--border) 70%, transparent)";
+const TICK = { fontSize: 11, fill: "var(--text-muted)" };
 
 const DIMENSIONS = [
   { key: "industry", label: "Industry" },
@@ -40,9 +53,11 @@ const PRESETS = [
 ] as const;
 type PresetKey = (typeof PRESETS)[number]["key"];
 
+// Range bounds are compared against `dateApplied`, a calendar date, so they are
+// counted back from the user's local day rather than sliced out of a UTC string.
 function daysAgoIso(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
+  const d = new Date(todayIso() + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString().slice(0, 10);
 }
 
@@ -69,7 +84,7 @@ export default function Analytics() {
 
   const rangePicker = (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="inline-flex rounded-lg border border-[var(--border)] p-0.5">
+      <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-0.5">
         {PRESETS.map((p) => (
           <button
             key={p.key}
@@ -83,7 +98,7 @@ export default function Analytics() {
             onClick={() => setPreset(p.key)}
             className={`rounded-md px-3 py-1 text-xs font-medium transition ${
               preset === p.key
-                ? "bg-[var(--accent)] text-white"
+                ? "bg-[var(--accent-fill)] text-[var(--on-accent)]"
                 : "text-[var(--text-muted)] hover:text-[var(--text)]"
             }`}
           >
@@ -97,14 +112,14 @@ export default function Analytics() {
             type="date"
             value={custom.from}
             onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1 outline-none focus:border-[var(--accent)]"
+            className="input"
           />
           –
           <input
             type="date"
             value={custom.to}
             onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1 outline-none focus:border-[var(--accent)]"
+            className="input"
           />
         </span>
       )}
@@ -112,12 +127,27 @@ export default function Analytics() {
   );
 
   if (isLoading || !data)
-    return <p className="text-[var(--text-muted)]">Loading analytics…</p>;
+    return (
+      <div role="status" aria-label="Loading analytics">
+        <Skeleton className="mb-5 h-8 w-48" />
+        <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+          {Array.from({ length: 8 }, (_, i) => (
+            <Skeleton key={i} className="h-20" />
+          ))}
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Skeleton className="h-72 lg:col-span-2" />
+          <Skeleton className="h-64" />
+          <Skeleton className="h-64" />
+        </div>
+      </div>
+    );
 
   const {
     totals,
     funnel,
     screenRate,
+    screenBasis,
     responseRate,
     medianDaysToFirstResponse,
     dimensions,
@@ -133,7 +163,7 @@ export default function Analytics() {
     <div>
       <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Analytics</h1>
+          <h1 className="page-title">Analytics</h1>
           <p className="text-sm text-[var(--text-muted)]">
             Live — recomputed from the event log on every change.
           </p>
@@ -142,7 +172,7 @@ export default function Analytics() {
       </header>
 
       {/* KPI row */}
-      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
         <Kpi
           label="Applications"
           value={totals.applications}
@@ -153,6 +183,12 @@ export default function Analytics() {
           value={totals.active}
           accent
           tip="Applications whose current stage is not an offer or a terminal exit (rejected / withdrawn / ghosted)."
+        />
+        <Kpi
+          label="On the docket"
+          value={totals.docketed}
+          sub="not yet applied"
+          tip="Roles you want but haven't applied to. They are excluded from every other figure on this page — and from the date range — because there is no application yet to measure."
         />
         <Kpi
           label="Response rate"
@@ -173,8 +209,8 @@ export default function Analytics() {
         <Kpi
           label="Screen rate"
           value={pct(screenRate)}
-          sub="screen ÷ applied"
-          tip="Applications that ever reached a screen ÷ all applications."
+          sub={`screen ÷ ${screenBasis.matured} judged`}
+          tip={`Applications that ever reached a screen ÷ the ones old enough to judge. An application counts once it has been answered, or once it has been out ${screenBasis.windowDays} days without a reply — expecting a callback on something you sent in yesterday would only make a productive week look like a bad one.`}
         />
         <Kpi
           label="Offer rate"
@@ -182,6 +218,38 @@ export default function Analytics() {
           sub={`${totals.offers} offer(s)`}
           tip="Applications currently at offer ÷ all applications."
         />
+      </div>
+
+      {/* The screen-rate denominator, stated in the open — including what it is
+          deliberately not counting yet, and the knob that decides. */}
+      <div className="-mt-3 mb-5 flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-[11px] text-[var(--text-muted)]">
+        <span>
+          Screen rate is over {screenBasis.matured} application
+          {screenBasis.matured === 1 ? "" : "s"} old enough to judge
+          {screenBasis.pending > 0 && (
+            <>
+              {" — "}
+              {screenBasis.pending} sent in the last {screenBasis.windowDays}{" "}
+              day{screenBasis.windowDays === 1 ? "" : "s"}{" "}
+              {screenBasis.pending === 1 ? "is" : "are"} still pending
+            </>
+          )}
+          .
+        </span>
+        <label
+          className="flex items-center gap-1"
+          title="How long an application must be out before silence counts as no screen. Applications already answered count immediately, whatever their age."
+        >
+          window
+          <SettingInput
+            value={screenBasis.windowDays}
+            min={1}
+            max={365}
+            onSave={(n) => updateSettings.mutate({ screenWindowDays: n })}
+            className="input w-12 px-1.5 text-right text-[11px]"
+          />
+          days
+        </label>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -199,7 +267,7 @@ export default function Analytics() {
                   </div>
                   <div className="relative h-9 flex-1 overflow-hidden rounded-md bg-[var(--surface-2)]">
                     <div
-                      className="flex h-full items-center rounded-md px-3 text-sm font-semibold text-white transition-all"
+                      className="flex h-full items-center rounded-md px-3 text-sm font-semibold text-[var(--on-stage)] transition-all"
                       style={{
                         width: `${widthPct}%`,
                         background: STAGE_COLORS[step.stage],
@@ -217,7 +285,7 @@ export default function Analytics() {
                         </span>{" "}
                         from prev
                         {step.dropOffFromPrev ? (
-                          <div className="text-red-500">
+                          <div className="text-[var(--danger)]">
                             −{step.dropOffFromPrev} dropped
                           </div>
                         ) : null}
@@ -251,7 +319,7 @@ export default function Analytics() {
                 <span
                   className={`font-semibold ${
                     pace.thisWeek >= pace.target
-                      ? "text-emerald-500"
+                      ? "text-[var(--success)]"
                       : "text-[var(--text)]"
                   }`}
                 >
@@ -284,15 +352,15 @@ export default function Analytics() {
                     <stop offset="100%" stopColor="var(--accent)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
                   dataKey="weekStart"
                   tickFormatter={(d) => fmtDate(d).replace(/,.*/, "")}
-                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                  tick={TICK}
                 />
                 <YAxis
                   allowDecimals={false}
-                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                  tick={TICK}
                 />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
@@ -335,7 +403,7 @@ export default function Analytics() {
               data={timeInStage}
               margin={{ left: -20, right: 8, top: 4 }}
             >
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
               <XAxis
                 dataKey="stage"
                 tickFormatter={(s) => STAGE_LABELS[s as Stage]}
@@ -345,7 +413,7 @@ export default function Analytics() {
                 textAnchor="end"
                 height={50}
               />
-              <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+              <YAxis tick={TICK} />
               <Tooltip
                 contentStyle={TOOLTIP_STYLE}
                 cursor={{ fill: "var(--surface-2)" }}
@@ -368,7 +436,7 @@ export default function Analytics() {
         <section className="card p-5 lg:col-span-2">
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">Breakdown</h3>
-            <div className="inline-flex rounded-lg border border-[var(--border)] p-0.5">
+            <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-0.5">
               {DIMENSIONS.map((d) => (
                 <button
                   key={d.key}
@@ -376,7 +444,7 @@ export default function Analytics() {
                   onClick={() => setDim(d.key)}
                   className={`rounded-md px-3 py-1 text-xs font-medium transition ${
                     dim === d.key
-                      ? "bg-[var(--accent)] text-white"
+                      ? "bg-[var(--accent-fill)] text-[var(--on-accent)]"
                       : "text-[var(--text-muted)] hover:text-[var(--text)]"
                   }`}
                 >
@@ -392,7 +460,7 @@ export default function Analytics() {
           <div className="grid gap-4 md:grid-cols-2">
             <ResponsiveContainer width="100%" height={240}>
               <BarChart data={breakdown} margin={{ left: -20, right: 8, top: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
                 <XAxis
                   dataKey="key"
                   tick={{ fontSize: 10, fill: "var(--text-muted)" }}
@@ -403,23 +471,36 @@ export default function Analytics() {
                 />
                 <YAxis
                   allowDecimals={false}
-                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                  tick={TICK}
                 />
                 <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: "var(--surface-2)" }} />
-                <Bar dataKey="applied" name="Applied" fill="var(--stage-applied)" radius={[3, 3, 0, 0]} />
-                <Bar dataKey="reachedScreen" name="Reached screen" fill="var(--stage-screen)" radius={[3, 3, 0, 0]} />
-                <Bar dataKey="reachedOffer" name="Reached offer" fill="var(--stage-offer)" radius={[3, 3, 0, 0]} />
+                <Legend
+                  verticalAlign="top"
+                  align="left"
+                  height={28}
+                  iconType="circle"
+                  iconSize={8}
+                  wrapperStyle={LEGEND_STYLE}
+                />
+                <Bar dataKey="applied" name="Applied" fill="var(--chart-1)" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="reachedScreen" name="Reached screen" fill="var(--chart-2)" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="reachedOffer" name="Reached offer" fill="var(--chart-3)" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-xs uppercase text-[var(--text-muted)]">
+                  <tr className="border-b border-[var(--border)] text-left text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
                     <th className="py-2 pr-2 font-medium">
                       {DIMENSIONS.find((d) => d.key === dim)!.label}
                     </th>
                     <th className="py-2 pr-2 text-right font-medium">Applied</th>
-                    <th className="py-2 pr-2 text-right font-medium">Screen %</th>
+                    <th
+                      className="py-2 pr-2 text-right font-medium"
+                      title={`Over the applications old enough to judge, not all of them — so a slice you applied to heavily this week isn't scored on replies that can't have arrived yet. Window: ${screenBasis.windowDays} days.`}
+                    >
+                      Screen %
+                    </th>
                     <th className="py-2 text-right font-medium">Offer %</th>
                   </tr>
                 </thead>
@@ -428,13 +509,18 @@ export default function Analytics() {
                     <tr key={s.key} className="border-b border-[var(--border)] last:border-0">
                       <td className="py-2 pr-2">{s.key}</td>
                       <td className="py-2 pr-2 text-right">{s.applied}</td>
-                      <td className="py-2 pr-2 text-right">{pct(s.screenRate)}</td>
+                      <td
+                        className="py-2 pr-2 text-right"
+                        title={`${s.reachedScreen} of ${s.maturedApplied} judged`}
+                      >
+                        {pct(s.screenRate)}
+                      </td>
                       <td className="py-2 text-right">{pct(s.offerRate)}</td>
                     </tr>
                   ))}
                   {breakdown.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="py-6 text-center text-[var(--text-muted)]">
+                      <td colSpan={4} className="empty">
                         No data for this dimension yet.
                       </td>
                     </tr>
@@ -446,7 +532,8 @@ export default function Analytics() {
         </section>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-4 grid gap-4">
+        <SheetsCard />
         <ImportCard />
       </div>
     </div>
@@ -467,15 +554,19 @@ function Kpi({
   tip?: string;
 }) {
   return (
-    <div className={`card p-4 ${tip ? "cursor-help" : ""}`} title={tip}>
-      <div className="text-xs font-medium text-[var(--text-muted)]">{label}</div>
+    <div className={`card p-3.5 ${tip ? "cursor-help" : ""}`} title={tip}>
+      <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+        {label}
+      </div>
       <div
-        className="mt-1 text-2xl font-bold"
+        className="tabular mt-1.5 text-[22px] font-semibold leading-none tracking-tight"
         style={accent ? { color: "var(--accent)" } : undefined}
       >
         {value}
       </div>
-      {sub && <div className="text-xs text-[var(--text-muted)]">{sub}</div>}
+      {sub && (
+        <div className="mt-1.5 text-[11px] text-[var(--text-muted)]">{sub}</div>
+      )}
     </div>
   );
 }

@@ -7,10 +7,24 @@ import math
 import sqlite3
 from typing import Optional
 
-from .domain import FUNNEL_STAGES, TERMINAL_STAGES, parse_ts
+from .domain import FUNNEL_STAGES, PRE_STAGES, TERMINAL_STAGES, parse_ts
 from .settings_store import get_settings
 
 DAY_MS = 24 * 60 * 60 * 1000
+
+# Applications currently sitting at a pre-stage are excluded from every figure
+# here: they haven't been applied to, so counting them would dilute each rate
+# and their `date_applied` is a placeholder that must never reach the range
+# filter below. The window mirrors repo._LATEST_EVENT_PER_APP exactly — same
+# `occurred_at DESC, id DESC` tie-break — so "current stage" means the same
+# thing in both places.
+_DOCKETED_IDS = f"""
+  SELECT application_id FROM (
+    SELECT application_id, stage, ROW_NUMBER() OVER (
+      PARTITION BY application_id ORDER BY occurred_at DESC, id DESC
+    ) AS rn FROM stage_events
+  ) WHERE rn = 1 AND stage IN ({",".join("?" * len(PRE_STAGES))})
+"""
 
 
 def _round1(n: float) -> float:
@@ -34,6 +48,24 @@ def _monday_of(iso_date: str) -> str:
     return (d - dt.timedelta(days=d.weekday())).isoformat()  # weekday(): Mon=0
 
 
+# Guards a malformed far-future range bound (routers/data.py validates the shape
+# of `to`, not its magnitude) from spinning this loop.
+_MAX_WEEKS = 520
+
+
+def _week_starts(start: Optional[str], end: Optional[str]) -> list[str]:
+    """Every Monday from `start` through `end`, inclusive."""
+    if start is None or end is None or end < start:
+        return []
+    cur = dt.date.fromisoformat(start)
+    last = dt.date.fromisoformat(end)
+    out: list[str] = []
+    while cur <= last and len(out) < _MAX_WEEKS:
+        out.append(cur.isoformat())
+        cur += dt.timedelta(days=7)
+    return out
+
+
 def _ms(ts: str) -> float:
     return parse_ts(ts).timestamp() * 1000
 
@@ -43,10 +75,17 @@ def compute_analytics(
     range_from: Optional[str] = None,
     range_to: Optional[str] = None,
 ) -> dict:
+    settings = get_settings(conn)
     apps = conn.execute(
-        """SELECT id, source, industry, role_type, date_applied, created_at
-           FROM applications"""
+        f"""SELECT id, source, industry, role_type, date_applied, created_at
+            FROM applications
+            WHERE id NOT IN ({_DOCKETED_IDS})""",
+        PRE_STAGES,
     ).fetchall()
+    docketed = conn.execute(
+        f"SELECT COUNT(*) AS n FROM applications WHERE id IN ({_DOCKETED_IDS})",
+        PRE_STAGES,
+    ).fetchone()["n"]
     if range_from:
         apps = [a for a in apps if a["date_applied"] >= range_from]
     if range_to:
@@ -74,6 +113,11 @@ def compute_analytics(
     def reached_count(stage: str) -> int:
         return sum(1 for s in reached_by_app.values() if stage in s)
 
+    # Shared by everything below that measures elapsed time or asks whether an
+    # application is finished.
+    now_ms = dt.datetime.now(dt.timezone.utc).timestamp() * 1000
+    terminal = set(TERMINAL_STAGES)
+
     # ---- Funnel ----
     funnel = []
     for i, stage in enumerate(FUNNEL_STAGES):
@@ -98,20 +142,62 @@ def compute_analytics(
                 }
             )
 
-    applied_n = reached_count("applied")
-    screen_n = reached_count("screen")
-    screen_rate = screen_n / applied_n if applied_n > 0 else 0
+    # ---- Screen rate, over the applications old enough to judge ----
+    # An application sent three days ago that hasn't heard back is not a miss;
+    # it's pending. Counting it as a miss makes the rate sag every time you
+    # have a productive week, which reads as the opposite of the truth. So the
+    # denominator is the MATURED cohort only: an application counts once it has
+    # either been answered (anything logged past the applied seed — a screen, a
+    # rejection, a ghost you called) or sat out the screen window without one.
+    # Everything younger and still silent is held back until it ages in.
+    screen_window_days = settings["screenWindowDays"]
+    undecided = {"applied", *PRE_STAGES}
+
+    def applied_ms(app) -> Optional[float]:
+        """When the clock started. The applied EVENT wins over the denormalized
+        `date_applied` column: it carries a time of day, and it is what every
+        other duration on this page is measured from."""
+        ev = next(
+            (e for e in by_app.get(app["id"], []) if e["stage"] == "applied"), None
+        )
+        if ev:
+            return _ms(ev["occurred_at"])
+        return _ms(app["date_applied"]) if app["date_applied"] else None
+
+    def is_matured(app) -> bool:
+        if reached_by_app.get(app["id"], set()) - undecided:
+            return True  # already answered — the outcome is on the record
+        t = applied_ms(app)
+        if t is None:
+            return True  # no date to hold it back by; don't silently drop it
+        return (now_ms - t) / DAY_MS >= screen_window_days
+
+    matured_ids = {a["id"] for a in apps if is_matured(a)}
+    pending_n = len(apps) - len(matured_ids)
+    screen_n = sum(
+        1 for i in matured_ids if "screen" in reached_by_app.get(i, set())
+    )
+    screen_rate = screen_n / len(matured_ids) if matured_ids else 0
 
     # ---- Response metrics ----
     # A "response" is the first event beyond the applied seed — a screen, an
     # interview, even a straight rejection. Ghosted does NOT count: it records
-    # the absence of a reply, and counting it would peg the rate at 100%.
+    # the absence of a reply, and counting it would peg the rate at 100%. The
+    # pre-stages don't count either, and for a subtler reason: a role that came
+    # off the docket keeps its `interested` event, which sorts BEFORE the
+    # applied seed, so it would otherwise be read as a reply that arrived
+    # before the application went out.
     responded = 0
     days_to_response: list[float] = []
     for evs in by_app.values():
         applied = next((e for e in evs if e["stage"] == "applied"), None)
         first = next(
-            (e for e in evs if e["stage"] not in ("applied", "ghosted")), None
+            (
+                e
+                for e in evs
+                if e["stage"] not in ("applied", "ghosted", *PRE_STAGES)
+            ),
+            None,
         )
         if not first:
             continue
@@ -127,7 +213,6 @@ def compute_analytics(
     )
 
     # ---- Current-stage totals ----
-    terminal = set(TERMINAL_STAGES)
     active = offers = rejected = ghosted = withdrawn = 0
     for evs in by_app.values():
         cur = evs[-1]["stage"]
@@ -150,8 +235,16 @@ def compute_analytics(
             if not key:
                 continue  # skip unclassified rows for this dimension
             reached = reached_by_app.get(app["id"], set())
-            s = m.setdefault(key, {"applied": 0, "screen": 0, "offer": 0})
+            s = m.setdefault(
+                key, {"applied": 0, "matured": 0, "screen": 0, "offer": 0}
+            )
             s["applied"] += 1
+            # Same split as the headline screen rate: `applied` stays the raw
+            # volume the bars are drawn from, `matured` is what Screen % is
+            # divided by, so a slice you've been hammering this week doesn't
+            # look like your worst-converting one.
+            if app["id"] in matured_ids:
+                s["matured"] += 1
             if "screen" in reached:
                 s["screen"] += 1
             if "offer" in reached:
@@ -160,9 +253,10 @@ def compute_analytics(
             {
                 "key": key,
                 "applied": s["applied"],
+                "maturedApplied": s["matured"],
                 "reachedScreen": s["screen"],
                 "reachedOffer": s["offer"],
-                "screenRate": s["screen"] / s["applied"] if s["applied"] else 0,
+                "screenRate": s["screen"] / s["matured"] if s["matured"] else 0,
                 "offerRate": s["offer"] / s["applied"] if s["applied"] else 0,
             }
             for key, s in m.items()
@@ -175,6 +269,8 @@ def compute_analytics(
         "roleType": breakdown_by(lambda a: a["role_type"]),
     }
 
+    current_week_start = _monday_of(dt.datetime.now(dt.timezone.utc).date().isoformat())
+
     # ---- Applications per week ----
     week_map: dict[str, int] = {}
     for app in apps:
@@ -182,25 +278,37 @@ def compute_analytics(
             continue
         wk = _monday_of(app["date_applied"])
         week_map[wk] = week_map.get(wk, 0) + 1
-    per_week = [
-        {"weekStart": wk, "count": n} for wk, n in sorted(week_map.items())
+    # Walk the calendar rather than the keys of week_map: a week nobody applied
+    # in still needs a zero point, or a hiatus reads as continued activity.
+    # `apps` is already range-filtered, so an empty week_map means nothing in
+    # range at all -- emit nothing so the card keeps showing its empty state
+    # rather than a flat zero line spanning the whole window.
+    per_week = [] if not week_map else [
+        {"weekStart": wk, "count": week_map.get(wk, 0)}
+        for wk in _week_starts(
+            _monday_of(range_from) if range_from else min(week_map),
+            # Run to the current week, not the last week with data, so a dry
+            # spell that reaches today shows as a decline instead of stopping.
+            # max() keeps a future-dated application from being truncated off.
+            _monday_of(range_to)
+            if range_to
+            else max(current_week_start, max(week_map)),
+        )
     ]
 
     # ---- Weekly pace vs. goal ----
-    current_week_start = _monday_of(dt.datetime.now(dt.timezone.utc).date().isoformat())
     prev4 = [
         (dt.date.fromisoformat(current_week_start) - dt.timedelta(days=7 * i)).isoformat()
         for i in (1, 2, 3, 4)
     ]
     pace = {
-        "target": get_settings(conn)["weeklyTarget"],
+        "target": settings["weeklyTarget"],
         "thisWeek": week_map.get(current_week_start, 0),
         "weekStart": current_week_start,
         "last4Avg": _round1(sum(week_map.get(wk, 0) for wk in prev4) / 4),
     }
 
     # ---- Time-in-stage distribution ----
-    now_ms = dt.datetime.now(dt.timezone.utc).timestamp() * 1000
     durations: dict[str, list[float]] = {}
     for evs in by_app.values():
         for i, e in enumerate(evs):
@@ -235,8 +343,20 @@ def compute_analytics(
             "rejected": rejected,
             "ghosted": ghosted,
             "withdrawn": withdrawn,
+            # Roles on the docket. Counted separately and deliberately outside
+            # the date range filter — a role you haven't applied to has no date
+            # to filter on — and outside every rate above.
+            "docketed": docketed,
         },
         "screenRate": screen_rate,
+        # What the rate was actually computed over, so the UI can show its n
+        # and name the applications it is deliberately not counting yet.
+        "screenBasis": {
+            "matured": len(matured_ids),
+            "pending": pending_n,
+            "reachedScreen": screen_n,
+            "windowDays": screen_window_days,
+        },
         "responseRate": response_rate,
         "medianDaysToFirstResponse": median_days_to_first_response,
         "funnel": funnel,

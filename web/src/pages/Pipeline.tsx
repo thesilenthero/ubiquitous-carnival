@@ -14,7 +14,10 @@ import {
   ROLE_TYPES,
   SOURCES,
   STAGE_LABELS,
-  TERMINAL_STAGES,
+  WORK_MODE_LABELS,
+  daysInStage,
+  isPreStage,
+  isStale,
   type Application,
   type Stage,
 } from "../types";
@@ -23,7 +26,8 @@ import { StageBadge } from "../components/StageBadge";
 import { StagePicker } from "../components/StagePicker";
 import { NewApplicationModal } from "../components/NewApplicationModal";
 import { Board } from "../components/Board";
-import { daysBetween, fmtDate, fmtSalary, relativeDays } from "../lib/format";
+import { Skeleton } from "../components/Skeleton";
+import { fmtDate, fmtSalary, relativeDays } from "../lib/format";
 import { VERDICTS, VERDICT_COLORS } from "../lib/evaluation";
 
 type SortKey =
@@ -46,15 +50,6 @@ const DEFAULT_DIR: Record<SortKey, SortDir> = {
   nextActionDate: "asc",
 };
 
-const isTerminal = (s: Stage) =>
-  (TERMINAL_STAGES as readonly string[]).includes(s);
-
-export const daysInStage = (a: Application) =>
-  Math.max(0, daysBetween(a.stageChangedAt));
-
-export const isStale = (a: Application, staleDays: number) =>
-  !isTerminal(a.currentStage) && daysInStage(a) > staleDays;
-
 type View = "table" | "board";
 const VIEW_KEY = "pipeline-view";
 
@@ -73,6 +68,7 @@ export default function Pipeline() {
   const [industryFilter, setIndustryFilter] = useState<string>("all");
   const [roleTypeFilter, setRoleTypeFilter] = useState<string>("all");
   const [showArchived, setShowArchived] = useState(false);
+  const [showDocket, setShowDocket] = useState(false);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("dateApplied");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -95,8 +91,25 @@ export default function Pipeline() {
     }
   };
 
+  // Discover files an application under its board's ATS ("Greenhouse"), which
+  // is a real source but not one of the suggestions — build the filter from the
+  // data as well, or those rows are the ones you can never filter down to.
+  const sourceOptions = useMemo(() => {
+    const known = new Set<string>(SOURCES);
+    const extra = new Set(
+      (apps ?? []).map((a) => a.source).filter((s) => s && !known.has(s)),
+    );
+    return [...SOURCES, ...[...extra].sort((a, b) => a.localeCompare(b))];
+  }, [apps]);
+
   const rows = useMemo(() => {
-    let list = (apps ?? []).filter((a) => showArchived || !a.archived);
+    let list = (apps ?? []).filter(
+      (a) =>
+        (showArchived || !a.archived) &&
+        (showDocket ||
+          stageFilter !== "all" ||
+          !isPreStage(a.currentStage)),
+    );
     if (stageFilter !== "all")
       list = list.filter((a) => a.currentStage === stageFilter);
     if (sourceFilter !== "all")
@@ -144,6 +157,7 @@ export default function Pipeline() {
     industryFilter,
     roleTypeFilter,
     showArchived,
+    showDocket,
     search,
     sortKey,
     sortDir,
@@ -177,13 +191,13 @@ export default function Pipeline() {
     <div>
       <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Pipeline</h1>
+          <h1 className="page-title">Pipeline</h1>
           <p className="text-sm text-[var(--text-muted)]">
             {rows.length} application{rows.length === 1 ? "" : "s"} shown
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border border-[var(--border)] p-0.5">
+          <div className="inline-flex rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-0.5">
             {(["table", "board"] as const).map((v) => (
               <button
                 key={v}
@@ -195,7 +209,7 @@ export default function Pipeline() {
                 onClick={() => switchView(v)}
                 className={`rounded-md px-3 py-1 text-xs font-medium transition ${
                   view === v
-                    ? "bg-[var(--accent)] text-white"
+                    ? "bg-[var(--accent-fill)] text-[var(--on-accent)]"
                     : "text-[var(--text-muted)] hover:text-[var(--text)]"
                 }`}
               >
@@ -205,7 +219,7 @@ export default function Pipeline() {
           </div>
           <button
             onClick={() => setShowNew(true)}
-            className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-90"
+            className="btn btn-primary btn-lg"
           >
             + New application
           </button>
@@ -217,7 +231,7 @@ export default function Pipeline() {
           placeholder="Search company, role, notes…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
+          className="input"
         />
         <Select
           value={stageFilter}
@@ -232,7 +246,7 @@ export default function Pipeline() {
           onChange={setSourceFilter}
           options={[
             ["all", "All sources"],
-            ...SOURCES.map((s) => [s, s] as [string, string]),
+            ...sourceOptions.map((s) => [s, s] as [string, string]),
           ]}
         />
         <Select
@@ -263,6 +277,17 @@ export default function Pipeline() {
           Archived
         </label>
         <label
+          className="flex items-center gap-1.5 text-sm text-[var(--text-muted)]"
+          title="Include roles on the docket — ones you want but haven't applied to"
+        >
+          <input
+            type="checkbox"
+            checked={showDocket}
+            onChange={(e) => setShowDocket(e.target.checked)}
+          />
+          Docket
+        </label>
+        <label
           className="ml-auto flex items-center gap-1 text-xs text-[var(--text-muted)]"
           title="Open applications with no stage event for this many days get the amber stale marker"
         >
@@ -288,7 +313,7 @@ export default function Pipeline() {
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] border-collapse text-sm">
               <thead>
-                <tr className="border-b border-[var(--border)] text-left text-xs uppercase tracking-wide text-[var(--text-muted)]">
+                <tr className="border-b border-[var(--border)] bg-[var(--surface-2)] text-left text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
                   <th className="w-8 px-3 py-2.5">
                     <input
                       type="checkbox"
@@ -341,11 +366,12 @@ export default function Pipeline() {
               <tbody>
                 {isLoading && (
                   <tr>
-                    <td
-                      colSpan={9}
-                      className="p-8 text-center text-[var(--text-muted)]"
-                    >
-                      Loading…
+                    <td colSpan={9} className="empty p-0">
+                      <div className="space-y-2 p-3">
+                        {Array.from({ length: 6 }, (_, i) => (
+                          <Skeleton key={i} className="h-9" />
+                        ))}
+                      </div>
                     </td>
                   </tr>
                 )}
@@ -353,7 +379,7 @@ export default function Pipeline() {
                   <tr>
                     <td
                       colSpan={9}
-                      className="p-10 text-center text-[var(--text-muted)]"
+                      className="empty"
                     >
                       No applications yet. Add your first one.
                     </td>
@@ -390,13 +416,13 @@ export default function Pipeline() {
             </span>
             <button
               onClick={() => bulkArchive(true)}
-              className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+              className="btn btn-primary btn-sm"
             >
               Archive
             </button>
             <button
               onClick={() => bulkArchive(false)}
-              className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--surface-2)]"
+              className="btn btn-secondary btn-sm"
             >
               Unarchive
             </button>
@@ -463,7 +489,7 @@ function Row({
           <div className="mt-0.5 flex flex-wrap gap-1">
             {app.evalComposite != null && (
               <span
-                className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-[var(--on-stage)]"
                 style={{
                   background: app.evalVerdict
                     ? VERDICT_COLORS[app.evalVerdict]
@@ -491,9 +517,15 @@ function Row({
           </div>
         )}
         <div className="mt-0.5 text-xs text-[var(--text-muted)]">
-          {app.remote ? "Remote" : app.location || ""}
+          {/* Remote has no location worth showing; the other two modes are
+              only meaningful alongside one. */}
+          {app.workMode === "remote"
+            ? "Remote"
+            : [app.location, WORK_MODE_LABELS[app.workMode]]
+                .filter(Boolean)
+                .join(" · ")}
           {app.salaryMin || app.salaryMax
-            ? ` · ${fmtSalary(app.salaryMin, app.salaryMax)}`
+            ? ` · ${fmtSalary(app.salaryMin, app.salaryMax, app.salaryPeriod)}`
             : ""}
         </div>
       </td>
@@ -504,10 +536,10 @@ function Row({
       </td>
       <td className="px-4 py-3 whitespace-nowrap">
         <span
-          className={stale ? "font-medium text-amber-500" : "text-[var(--text-muted)]"}
+          className={stale ? "font-medium text-[var(--warning)]" : "text-[var(--text-muted)]"}
           title={stale ? `No movement in ${days} days` : undefined}
         >
-          {stale && <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle" />}
+          {stale && <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-[var(--warning)] align-middle" />}
           {days}d
         </span>
       </td>
@@ -590,7 +622,7 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
+      className="input"
     >
       {options.map(([v, label]) => (
         <option key={v} value={v}>

@@ -4,6 +4,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import type {
+  Activity,
   Analytics,
   Application,
   Contact,
@@ -12,10 +13,13 @@ import type {
   FetchedPosting,
   JobBoard,
   RefreshResult,
+  NextStep,
   Settings,
+  SheetsStatus,
   Stage,
   Suggestion,
 } from "./types";
+import { todayIso } from "./lib/format";
 
 async function http<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -35,6 +39,21 @@ export interface AnalyticsRange {
   to?: string;
 }
 
+// `dateField` chooses which of the log's two clocks the range filters on.
+// "recorded" (the default) answers "what did I hear this week"; "occurred"
+// answers "what is on the calendar next week" — over the very same rows.
+export interface ActivityFilters {
+  dateField?: "recorded" | "occurred";
+  from?: string;
+  to?: string;
+  entity?: string;
+  action?: string;
+  applicationId?: string;
+  contactId?: string;
+  source?: string;
+  limit?: number;
+}
+
 const keys = {
   applications: ["applications"] as const,
   application: (id: string) => ["application", id] as const,
@@ -43,9 +62,13 @@ const keys = {
     ["analytics", range.from ?? "", range.to ?? ""] as const,
   contacts: ["contacts"] as const,
   suggestions: ["suggestions"] as const,
+  nextSteps: ["next-steps"] as const,
   settings: ["settings"] as const,
+  sheetsStatus: ["sheets-status"] as const,
   boards: ["boards"] as const,
   discovered: (status: DiscoveredStatus) => ["discovered", status] as const,
+  activity: (f: ActivityFilters) =>
+    ["activity", JSON.stringify(f)] as const,
 };
 
 // After any mutation we invalidate both the list and the analytics so the
@@ -57,7 +80,9 @@ function useInvalidateAll() {
     qc.invalidateQueries({ queryKey: keys.analytics });
     qc.invalidateQueries({ queryKey: ["application"] });
     qc.invalidateQueries({ queryKey: keys.suggestions });
+    qc.invalidateQueries({ queryKey: keys.nextSteps });
     qc.invalidateQueries({ queryKey: ["discovered"] });
+    qc.invalidateQueries({ queryKey: ["activity"] });
   };
 }
 
@@ -84,6 +109,18 @@ export function useAnalytics(range: AnalyticsRange = {}) {
   return useQuery({
     queryKey: keys.analyticsRange(range),
     queryFn: () => http<Analytics>(`/api/analytics${qs ? `?${qs}` : ""}`),
+  });
+}
+
+export function useActivity(filters: ActivityFilters = {}) {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== "") params.set(k, String(v));
+  }
+  const qs = params.toString();
+  return useQuery({
+    queryKey: keys.activity(filters),
+    queryFn: () => http<Activity[]>(`/api/activity${qs ? `?${qs}` : ""}`),
   });
 }
 
@@ -168,18 +205,20 @@ export function useDeleteStageEvent() {
   });
 }
 
-// --- Resume attachment ---------------------------------------------------
+// --- PDF attachments -----------------------------------------------------
+
+export type AttachmentKind = "resume" | "cover-letter";
 
 // Upload deliberately bypasses `http`: that helper sets a JSON Content-Type,
 // and forcing one on a FormData body strips the multipart boundary the server
 // needs to parse it. The browser sets the correct header itself.
-export function useUploadResume() {
+export function useUploadAttachment(kind: AttachmentKind) {
   const invalidate = useInvalidateAll();
   return useMutation({
     mutationFn: async ({ id, file }: { id: string; file: File }) => {
       const body = new FormData();
       body.append("file", file);
-      const res = await fetch(`/api/applications/${id}/resume`, {
+      const res = await fetch(`/api/applications/${id}/attachments/${kind}`, {
         method: "POST",
         body,
       });
@@ -193,11 +232,13 @@ export function useUploadResume() {
   });
 }
 
-export function useDeleteResume() {
+export function useDeleteAttachment(kind: AttachmentKind) {
   const invalidate = useInvalidateAll();
   return useMutation({
     mutationFn: (id: string) =>
-      http<Application>(`/api/applications/${id}/resume`, { method: "DELETE" }),
+      http<Application>(`/api/applications/${id}/attachments/${kind}`, {
+        method: "DELETE",
+      }),
     onSuccess: invalidate,
   });
 }
@@ -215,7 +256,6 @@ export function useAddInterview() {
       date?: string;
       format?: string;
       interviewers?: string;
-      questions?: string;
       notes?: string;
     }) =>
       http<Application>(`/api/applications/${id}/interviews`, {
@@ -366,6 +406,27 @@ export function useResolveSuggestion() {
   });
 }
 
+// --- Next steps ----------------------------------------------------------
+
+export function useNextSteps() {
+  return useQuery({
+    queryKey: keys.nextSteps,
+    queryFn: () => http<NextStep[]>("/api/next-steps"),
+  });
+}
+
+export function useSnoozeNextStep() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      http<{ id: string; until: string }>("/api/next-steps/snooze", {
+        method: "POST",
+        body: JSON.stringify({ id }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.nextSteps }),
+  });
+}
+
 // --- Settings ------------------------------------------------------------
 
 export function useSettings() {
@@ -386,7 +447,32 @@ export function useUpdateSettings() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.settings });
       qc.invalidateQueries({ queryKey: keys.analytics });
+      // quietDays and weeklyTarget are thresholds the play engine reads.
+      qc.invalidateQueries({ queryKey: keys.nextSteps });
     },
+  });
+}
+
+// --- Google Sheet mirror -------------------------------------------------
+
+export function useSheetsStatus() {
+  return useQuery({
+    queryKey: keys.sheetsStatus,
+    queryFn: () => http<SheetsStatus>("/api/sheets/status"),
+    // The server pushes on its own; this is just to keep "last synced" honest
+    // without making the user reload the page.
+    refetchInterval: 60_000,
+  });
+}
+
+export function useSyncSheets() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      http<SheetsStatus & { synced: boolean }>("/api/sheets/sync", {
+        method: "POST",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.sheetsStatus }),
   });
 }
 
@@ -457,9 +543,14 @@ export function useResolveDiscovered() {
       action,
     }: {
       id: string;
-      action: "save" | "dismiss" | "apply";
+      action: "save" | "dismiss" | "docket" | "apply";
     }) =>
-      http<DiscoveredJob>(`/api/discovered/${id}/${action}`, { method: "POST" }),
+      // `date` is the browser's calendar day, which the server uses as the
+      // application date — its own UTC "today" runs ahead of ours all evening.
+      http<DiscoveredJob>(
+        `/api/discovered/${id}/${action}?date=${todayIso()}`,
+        { method: "POST" },
+      ),
     onSuccess: invalidate,
   });
 }

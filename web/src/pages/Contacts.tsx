@@ -18,22 +18,21 @@ import {
   type Contact,
 } from "../types";
 import {
+  EditableText,
   FieldDate,
   FieldEdit,
   FieldOptional,
   FieldSelect,
   FieldUrl,
 } from "../components/fields";
-import { fmtDate, relativeDays } from "../lib/format";
-
-const isoFromDate = (d: string) => new Date(d + "T12:00:00.000Z").toISOString();
-const todayStr = () => new Date().toISOString().slice(0, 10);
+import { fmtDate, isoFromDate, relativeDays, todayIso } from "../lib/format";
+import { SkeletonRows } from "../components/Skeleton";
 
 const STATUS_COLORS: Record<string, string> = {
-  Pending: "#f59e0b",
-  Connected: "#10b981",
-  "Followed up": "#4f46e5",
-  Closed: "#6b7280",
+  Pending: "var(--warning)",
+  Connected: "var(--success)",
+  "Followed up": "var(--accent)",
+  Closed: "var(--text-muted)",
 };
 
 export default function Contacts() {
@@ -79,14 +78,14 @@ export default function Contacts() {
     <div className="max-w-3xl">
       <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Contacts</h1>
+          <h1 className="page-title">Contacts</h1>
           <p className="text-sm text-[var(--text-muted)]">
             {rows.length} networking contact{rows.length === 1 ? "" : "s"}
           </p>
         </div>
         <button
           onClick={() => setShowNew((s) => !s)}
-          className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-90"
+          className="btn btn-primary btn-lg"
         >
           + New contact
         </button>
@@ -105,7 +104,7 @@ export default function Contacts() {
               autoFocus
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+              className="input w-full"
             />
           </div>
           <div className="min-w-40 flex-1">
@@ -117,7 +116,7 @@ export default function Contacts() {
               onChange={(e) =>
                 setForm((f) => ({ ...f, company: e.target.value }))
               }
-              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+              className="input w-full"
             />
           </div>
           <div>
@@ -129,7 +128,7 @@ export default function Contacts() {
               onChange={(e) =>
                 setForm((f) => ({ ...f, relationship: e.target.value }))
               }
-              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+              className="input"
             >
               <option value="">—</option>
               {RELATIONSHIPS.map((r) => (
@@ -142,7 +141,7 @@ export default function Contacts() {
           <button
             type="submit"
             disabled={!form.name.trim() || create.isPending}
-            className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            className="btn btn-primary btn-lg"
           >
             Add
           </button>
@@ -154,12 +153,12 @@ export default function Contacts() {
           placeholder="Search name, company, notes…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
+          className="input"
         />
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
+          className="input"
         >
           <option value="all">All statuses</option>
           {CONTACT_STATUSES.map((s) => (
@@ -170,9 +169,9 @@ export default function Contacts() {
         </select>
       </div>
 
-      {isLoading && <p className="text-[var(--text-muted)]">Loading…</p>}
+      {isLoading && <SkeletonRows rows={4} label="Loading contacts" />}
       {!isLoading && rows.length === 0 && (
-        <div className="card p-10 text-center text-[var(--text-muted)]">
+        <div className="card empty">
           No contacts yet. Add the people you're networking with.
         </div>
       )}
@@ -211,20 +210,45 @@ function ContactCard({
 
   const [logKind, setLogKind] = useState("follow-up");
   const [logNote, setLogNote] = useState("");
-  const [logDate, setLogDate] = useState(todayStr());
+  const [logDate, setLogDate] = useState(todayIso());
   const [logAppId, setLogAppId] = useState("");
 
-  const statusColor = STATUS_COLORS[c.status] ?? "#6b7280";
+  const statusColor = STATUS_COLORS[c.status] ?? "var(--text-muted)";
   const appsById = new Map((apps ?? []).map((a) => [a.id, a]));
 
   return (
     <div className="card">
-      <button
+      {/* A div, not a button: the name inside is click-to-edit, and an input
+          can't live inside a button. */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         onClick={onToggle}
-        className="flex w-full items-center gap-3 p-3 text-left"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        className="flex w-full cursor-pointer items-center gap-3 p-3 text-left"
       >
         <div className="min-w-0 flex-1">
-          <div className="font-medium">{c.name}</div>
+          {/* Editing the name must not toggle the card — nor may a space or
+              Enter typed into the input. */}
+          <div
+            // -ml-1 cancels the edit affordance's own padding, so the name
+            // still lines up with the company/relationship line beneath it.
+            className="-ml-1 w-fit"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <EditableText
+              value={c.name}
+              onSave={(v) => save({ name: v })}
+              className="font-medium"
+            />
+          </div>
           <div className="truncate text-xs text-[var(--text-muted)]">
             {[c.company, c.relationship].filter(Boolean).join(" · ") || "—"}
           </div>
@@ -254,10 +278,10 @@ function ContactCard({
           title="Time since the last logged interaction"
         >
           {c.lastInteractionAt
-            ? relativeDays(c.lastInteractionAt.slice(0, 10))
+            ? relativeDays(c.lastInteractionAt)
             : "no touches"}
         </span>
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-[var(--border)] p-4">
@@ -312,7 +336,7 @@ function ContactCard({
             onBlur={(e) => save({ notes: e.target.value || null })}
             rows={2}
             placeholder="Notes…"
-            className="mb-4 w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            className="input mb-4 w-full"
           />
 
           {/* Interaction log — the contact's own append-only history. */}
@@ -320,7 +344,7 @@ function ContactCard({
             <select
               value={logKind}
               onChange={(e) => setLogKind(e.target.value)}
-              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)]"
+              className="input text-xs"
             >
               {INTERACTION_KINDS.map((k) => (
                 <option key={k} value={k}>
@@ -332,12 +356,12 @@ function ContactCard({
               type="date"
               value={logDate}
               onChange={(e) => setLogDate(e.target.value)}
-              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)]"
+              className="input text-xs"
             />
             <select
               value={logAppId}
               onChange={(e) => setLogAppId(e.target.value)}
-              className="max-w-44 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs text-[var(--text-muted)] outline-none focus:border-[var(--accent)]"
+              className="input max-w-44 text-xs text-[var(--text-muted)]"
               title="Link to an application (optional)"
             >
               <option value="">no application</option>
@@ -353,7 +377,7 @@ function ContactCard({
               value={logNote}
               onChange={(e) => setLogNote(e.target.value)}
               placeholder="Note…"
-              className="min-w-32 flex-1 rounded-lg border border-[var(--border)] px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)]"
+              className="input min-w-32 flex-1 text-xs"
             />
             <button
               onClick={() => {
@@ -365,11 +389,11 @@ function ContactCard({
                   applicationId: logAppId || null,
                 });
                 setLogNote("");
-                setLogDate(todayStr());
+                setLogDate(todayIso());
                 setLogAppId("");
               }}
               title="Append this interaction to the contact's history"
-              className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white"
+              className="btn btn-primary btn-sm"
             >
               Log
             </button>
@@ -406,7 +430,7 @@ function ContactCard({
                         interactionId: it.id,
                       })
                     }
-                    className="text-xs text-[var(--text-muted)] hover:text-red-600"
+                    className="text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
                     title="Delete interaction"
                   >
                     ✕
@@ -428,7 +452,7 @@ function ContactCard({
                   del.mutate(c.id);
                 }
               }}
-              className="text-xs text-red-600 hover:underline"
+              className="text-xs text-[var(--danger)] hover:underline"
             >
               Delete contact
             </button>

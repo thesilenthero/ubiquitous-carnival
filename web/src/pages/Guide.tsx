@@ -1,8 +1,11 @@
+import { Link } from "react-router-dom";
 import { useSettings } from "../api";
 import {
   DEFAULT_QUIET_DAYS,
+  DEFAULT_SCREEN_WINDOW_DAYS,
   DEFAULT_STALE_DAYS,
   FUNNEL_STAGES,
+  PRE_STAGES,
   STAGE_LABELS,
   TERMINAL_STAGES,
 } from "../types";
@@ -17,10 +20,11 @@ const SECTIONS = [
   ["pipeline", "Pipeline"],
   ["detail", "Application detail"],
   ["interviews", "Interviews"],
-  ["follow-ups", "Follow-ups & suggestions"],
+  ["next-steps", "Next steps & suggestions"],
   ["contacts", "Contacts"],
   ["analytics", "Analytics"],
   ["data", "Data, import & export"],
+  ["tools", "Occasional tools"],
 ] as const;
 
 export default function Guide() {
@@ -28,10 +32,12 @@ export default function Guide() {
   const { data: settings } = useSettings();
   const staleDays = settings?.staleDays ?? DEFAULT_STALE_DAYS;
   const quietDays = settings?.quietDays ?? DEFAULT_QUIET_DAYS;
+  const screenWindowDays =
+    settings?.screenWindowDays ?? DEFAULT_SCREEN_WINDOW_DAYS;
   return (
     <div className="max-w-3xl">
       <header className="mb-5">
-        <h1 className="text-2xl font-bold tracking-tight">Guide</h1>
+        <h1 className="page-title">Guide</h1>
         <p className="text-sm text-[var(--text-muted)]">
           What everything means and where to find it. Most controls also
           explain themselves on hover.
@@ -67,7 +73,24 @@ export default function Guide() {
       </Section>
 
       <Section id="stages" title="Stages">
-        <p>Six ordered funnel stages describe forward progress:</p>
+        <p>
+          One stage sits before the funnel, for roles you want but haven't
+          applied to:
+        </p>
+        <div className="my-2 flex flex-wrap gap-1.5">
+          {PRE_STAGES.map((s) => (
+            <StageBadge key={s} stage={s} />
+          ))}
+        </div>
+        <p>
+          A docketed role is a real application record — it takes notes, an
+          evaluation, and PDF attachments — but it is deliberately outside the
+          funnel and excluded from every figure on Analytics, because there is
+          no application yet to measure. Mark it applied and it enters the
+          funnel with the date you actually sent it. The Pipeline table hides
+          the docket behind a toggle; Follow-ups gives it its own section.
+        </p>
+        <p>Six ordered funnel stages then describe forward progress:</p>
         <div className="my-2 flex flex-wrap items-center gap-1.5">
           {FUNNEL_STAGES.map((s, i) => (
             <span key={s} className="flex items-center gap-1.5">
@@ -152,8 +175,11 @@ export default function Guide() {
             export.
           </li>
           <li>
-            <b>Resume</b> — paste the resume text you sent, so you always know
-            exactly what this company saw. Also included in CSV export.
+            <b>Resume</b> and <b>Cover letter</b> — attach the exact PDFs you
+            sent, so you always know precisely what this company saw. Each one's
+            text is extracted automatically (paste it yourself if the PDF has no
+            text layer), and it's kept even if you detach the file. The resume
+            text is also included in CSV export.
           </li>
           <li>
             <b>Stage history</b> — record a transition with an optional
@@ -169,9 +195,9 @@ export default function Guide() {
           Recording a stage event of type {""}
           <b>Screen, First round, Later round, or Final</b> automatically
           creates an interview round with the date prefilled — you only add
-          what the log doesn't know: format, interviewers, questions asked,
-          and prep/retro notes. The questions fields build up a personal
-          question bank across your whole search.
+          what the log doesn't know: format, interviewers, and notes — the
+          questions you were asked, how you prepared, and how it went, all in
+          one place.
         </p>
         <p>
           Deleting a stage event also removes its auto-created round, but only
@@ -181,7 +207,7 @@ export default function Guide() {
         </p>
       </Section>
 
-      <Section id="follow-ups" title="Follow-ups & suggestions">
+      <Section id="next-steps" title="Next steps & suggestions">
         <ul>
           <li>
             <b>Suggested updates</b> — stage changes proposed from outside the
@@ -198,11 +224,29 @@ export default function Guide() {
             card. Ticking the checkbox marks the action done and clears it.
           </li>
           <li>
-            <b>Gone quiet</b> — open, unarchived applications with no stage
-            event in {quietDays}+ days, stalest first. "Mark ghosted" records
-            the ghosted event in one click. The threshold is your
-            time-to-ghost rule — editable right in the section header (the
-            historical import used 30 days for the same judgment).
+            <b>Suggested actions</b> — computed from the pipeline itself, so
+            there is nothing to maintain: an interview booked for a future
+            date becomes <i>prep</i>, a round that just happened becomes a{" "}
+            <i>thank-you</i>, an application silent for {quietDays}+ days
+            becomes outreach — asking a contact you already have at that
+            company, or finding someone on LinkedIn when you don't. Silence
+            for twice that long suggests closing it as ghosted instead, which
+            keeps your response rate honest. Each application produces at most
+            one suggestion, because it's in one situation at a time.
+          </li>
+          <li>
+            <b>Add action</b> writes the suggestion as a real next action due
+            today, which moves it into the groups below and stops it being
+            suggested. <b>Later</b> hides one for a week; if the situation
+            still holds when that lapses, it comes back. Nothing here writes
+            to the stage log except the explicit "Mark ghosted" and "Mark
+            applied" buttons.
+          </li>
+          <li>
+            The <b>quiet after</b> threshold in the section header is your
+            time-to-ghost rule (the historical import used 30 days for the
+            same judgment). It also sets the doubled window for closing
+            something out.
           </li>
         </ul>
       </Section>
@@ -247,8 +291,13 @@ export default function Guide() {
             reply, over applications that got one.
           </li>
           <li>
-            <b>Screen rate</b> — applications that reached a screen ÷ all
-            applications. <b>Offer rate</b> — offers ÷ all applications.
+            <b>Screen rate</b> — applications that reached a screen ÷ the ones
+            old enough to judge. An application joins that denominator once it
+            has been answered, or once it has been out {screenWindowDays} days
+            with no reply; anything newer and still silent is pending, not a
+            miss, and is held back until it ages in. Same rule in the
+            industry / role-type table. <b>Offer rate</b> — offers ÷ all
+            applications.
           </li>
           <li>
             <b>Funnel</b> — how many applications <i>ever reached</i> each
@@ -277,9 +326,10 @@ export default function Guide() {
       <Section id="data" title="Data, import & export">
         <ul>
           <li>
-            <b>Export CSV</b> (sidebar) — every field including stage history
-            and job descriptions. Your escape hatch against lock-in; nothing
-            is only in the app.
+            <b>Export data</b> (sidebar) — a zip of four CSVs: applications
+            (every field, plus job descriptions), the stage log with its notes,
+            interviews, and engagements. Your escape hatch against lock-in;
+            nothing is only in the app.
           </li>
           <li>
             <b>Sheet importers</b> — <code>scripts/import_sheet.py</code>{" "}
@@ -299,6 +349,30 @@ export default function Guide() {
             The database is a single SQLite file in <code>data/</code>{" "}
             (git-ignored). <code>npm run seed</code> replaces everything with
             sample data — never run it after importing real data.
+          </li>
+        </ul>
+      </Section>
+
+      <Section id="tools" title="Occasional tools">
+        <p>
+          These two aren't in the sidebar — they're for a specific moment
+          rather than daily work, and the nav stays short because of it. Both
+          keep their URLs and all their data.
+        </p>
+        <ul>
+          <li>
+            <Link to="/evaluation" className="underline">
+              Evaluation
+            </Link>{" "}
+            — score a role against your criteria before applying, then convert
+            the assessment straight into an application.
+          </li>
+          <li>
+            <Link to="/discover" className="underline">
+              Discover
+            </Link>{" "}
+            — the tracked ATS boards and the postings they turn up. This is
+            also where boards are added, edited, and removed.
           </li>
         </ul>
       </Section>

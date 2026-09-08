@@ -66,6 +66,8 @@ async def update_contact(
     contact_id: str, request: Request, conn: sqlite3.Connection = Depends(get_db)
 ):
     b = await _body(request)
+    if "name" in b and (not isinstance(b["name"], str) or not b["name"].strip()):
+        return _err(400, "name must be a non-empty string")
     if "nextActionDate" in b and b["nextActionDate"] is not None and not is_iso_date(
         b["nextActionDate"]
     ):

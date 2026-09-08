@@ -5,6 +5,7 @@ is accepted.
 import sqlite3
 from typing import Optional, Union
 
+from . import activity
 from .ids import nanoid, now_iso
 from .repo import add_stage_event
 
@@ -80,6 +81,17 @@ def create_suggestion(
             ),
         )
     row = conn.execute(_SELECT_ONE, (sid,)).fetchone()
+    if row and not dup:
+        # A suggestion is something the scanner heard, so recorded_at is when
+        # it arrived and occurred_at is the evidence's own date — the email's,
+        # which may be days old by the time a scan runs.
+        activity.record(
+            conn, "suggestion", sid, activity.CREATED,
+            summary=f"Suggested {row['suggested_stage']} for "
+                    f"{row['role_title']} at {row['company']}",
+            application_id=row["application_id"],
+            occurred_at=row["occurred_at"],
+        )
     return _map_suggestion(row) if row else None
 
 
@@ -102,6 +114,17 @@ def accept_suggestion(conn: sqlite3.Connection, sid: str) -> Optional[dict]:
         row["occurred_at"] or None,
     )
     conn.execute("UPDATE suggestions SET status = 'accepted' WHERE id = ?", (sid,))
+    # add_stage_event above logged the transition itself; this entry is what
+    # says the transition came from an accepted suggestion rather than from you
+    # typing it, which is provenance the stage log alone cannot carry.
+    activity.record(
+        conn, "suggestion", sid, activity.UPDATED,
+        summary=f"Accepted {row['suggested_stage']} for "
+                f"{row['role_title']} at {row['company']}",
+        application_id=row["application_id"],
+        changes={"status": ["pending", "accepted"]},
+        occurred_at=row["occurred_at"],
+    )
     return _map_suggestion(conn.execute(_SELECT_ONE, (sid,)).fetchone())
 
 
@@ -112,5 +135,13 @@ def dismiss_suggestion(conn: sqlite3.Connection, sid: str) -> Optional[dict]:
     if row["status"] == "pending":
         conn.execute(
             "UPDATE suggestions SET status = 'dismissed' WHERE id = ?", (sid,)
+        )
+        activity.record(
+            conn, "suggestion", sid, activity.UPDATED,
+            summary=f"Dismissed {row['suggested_stage']} for "
+                    f"{row['role_title']} at {row['company']}",
+            application_id=row["application_id"],
+            changes={"status": ["pending", "dismissed"]},
+            occurred_at=row["occurred_at"],
         )
     return _map_suggestion(conn.execute(_SELECT_ONE, (sid,)).fetchone())

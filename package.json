@@ -9,6 +9,7 @@
     "dev:web": "npm --prefix web run dev",
     "build": "npm --prefix web install && npm --prefix web run build",
     "start": "python3 -m uvicorn server.main:app --host 0.0.0.0 --port \"${PORT:-4000}\"",
+    "lan": "sh scripts/lan_url.sh && npm start",
     "seed": "python3 -m server.seed"
   },
   "devDependencies": {

@@ -4,7 +4,6 @@ import {
   useApplications,
   useContacts,
   useResolveSuggestion,
-  useSetStage,
   useSettings,
   useSuggestions,
   useUpdateApplication,
@@ -13,14 +12,9 @@ import {
 } from "../api";
 import { SettingInput } from "../components/SettingInput";
 import { StageBadge } from "../components/StageBadge";
+import { SuggestedActions } from "../components/SuggestedActions";
+import { DEFAULT_QUIET_DAYS, STAGE_LABELS, type Stage } from "../types";
 import {
-  DEFAULT_QUIET_DAYS,
-  STAGE_LABELS,
-  TERMINAL_STAGES,
-  type Stage,
-} from "../types";
-import {
-  daysBetween,
   fmtDate,
   relativeDays,
   urgencyOf,
@@ -36,12 +30,13 @@ const GROUP_LABEL: Record<Urgency, string> = {
   later: "Later",
   none: "No date",
 };
+// Tokens, not literals, so the urgency ramp follows the theme.
 const GROUP_COLOR: Record<Urgency, string> = {
-  overdue: "#ef4444",
-  today: "#f59e0b",
-  soon: "#4f46e5",
-  later: "#6b7280",
-  none: "#6b7280",
+  overdue: "var(--danger)",
+  today: "var(--warning)",
+  soon: "var(--accent)",
+  later: "var(--text-muted)",
+  none: "var(--text-muted)",
 };
 
 // One open next action, whether it lives on an application or a contact.
@@ -56,32 +51,22 @@ interface ActionRow {
   stage?: Stage; // applications only
 }
 
-export default function FollowUps() {
+// Two queues on one page, in the order you'd work them: what the pipeline
+// implies you should do (computed, server/next_steps.py), then what you've
+// already committed to (dated, and yours). Acting on a suggestion writes a
+// next action, so items move down the page rather than piling up at the top.
+export default function NextSteps() {
   const { data: apps } = useApplications();
   const { data: contacts } = useContacts();
   const { data: suggestions } = useSuggestions();
   const update = useUpdateApplication();
   const updateContact = useUpdateContact();
-  const setStage = useSetStage();
   const resolve = useResolveSuggestion();
   const { data: settings } = useSettings();
   const updateSettings = useUpdateSettings();
-  // An application has "gone quiet" when it's still open but nothing has been
-  // logged for this long — a nudge to follow up or call it ghosted.
+  // How long silence lasts before the engine starts suggesting you chase it.
+  // Edited here because this is the page where its effect is visible.
   const quietDays = settings?.quietDays ?? DEFAULT_QUIET_DAYS;
-
-  const quiet = useMemo(
-    () =>
-      (apps ?? [])
-        .filter(
-          (a) =>
-            !a.archived &&
-            !(TERMINAL_STAGES as readonly string[]).includes(a.currentStage) &&
-            daysBetween(a.stageChangedAt) > quietDays,
-        )
-        .sort((a, b) => a.stageChangedAt.localeCompare(b.stageChangedAt)),
-    [apps, quietDays],
-  );
 
   const groups = useMemo(() => {
     const rows: ActionRow[] = [
@@ -135,21 +120,35 @@ export default function FollowUps() {
   return (
     <div className="max-w-3xl">
       <header className="mb-5">
-        <h1 className="text-2xl font-bold tracking-tight">Follow-ups</h1>
+        <h1 className="page-title">Next steps</h1>
         <p className="text-sm text-[var(--text-muted)]">
-          {total} open action{total === 1 ? "" : "s"} across your pipeline and
-          contacts
+          {total} scheduled action{total === 1 ? "" : "s"} across your pipeline
+          and contacts
         </p>
       </header>
 
-      {total === 0 && quiet.length === 0 && (suggestions ?? []).length === 0 && (
-        <div className="card p-10 text-center text-[var(--text-muted)]">
-          Nothing to follow up on. Add a next action to any application.
-        </div>
-      )}
+      <SuggestedActions
+        trailing={
+          <label
+            className="flex cursor-auto items-center gap-1 font-normal text-[var(--text-muted)]"
+            title="Your time-to-ghost threshold — how long an application stays silent before it's suggested for follow-up"
+          >
+            quiet after
+            <SettingInput
+              value={quietDays}
+              min={1}
+              max={365}
+              onSave={(n) => updateSettings.mutate({ quietDays: n })}
+              className="input w-14 text-right text-xs"
+            />
+            days
+          </label>
+        }
+      />
 
-      {/* Suggested updates from external scans (e.g. a Gmail pass). Nothing is
-          written to the stage log until Accept is clicked. */}
+      {/* Suggested updates from external scans (e.g. a Gmail pass). Unlike the
+          actions above, these propose writing to the STAGE LOG, so they stay a
+          separate queue with their own accept/dismiss. */}
       {(suggestions ?? []).length > 0 && (
         <section className="mb-6">
           <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--accent)]">
@@ -181,14 +180,14 @@ export default function FollowUps() {
                 <button
                   onClick={() => resolve.mutate({ id: s.id, action: "accept" })}
                   title={`Append a ${STAGE_LABELS[s.suggestedStage]} event${s.occurredAt ? " dated when the evidence happened" : ""}`}
-                  className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                  className="btn btn-primary btn-sm"
                 >
                   Accept
                 </button>
                 <button
                   onClick={() => resolve.mutate({ id: s.id, action: "dismiss" })}
                   title="Discard — nothing is written to the stage log"
-                  className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-2)]"
+                  className="btn btn-secondary btn-sm"
                 >
                   Dismiss
                 </button>
@@ -196,6 +195,13 @@ export default function FollowUps() {
             ))}
           </div>
         </section>
+      )}
+
+      {total === 0 && (
+        <div className="card empty">
+          Nothing scheduled. Add a next action to any application, or take one
+          of the suggestions above.
+        </div>
       )}
 
       {[...GROUP_ORDER, "none" as Urgency].map((g) =>
@@ -266,68 +272,6 @@ export default function FollowUps() {
           </section>
         ),
       )}
-
-      {/* Always rendered so the time-to-ghost threshold stays editable even
-          when nothing currently qualifies. */}
-      <section className="mb-6">
-        <h2
-          className="mb-2 flex cursor-help items-center gap-2 text-sm font-semibold text-amber-500"
-          title={`Open, unarchived applications with no stage event in ${quietDays}+ days, stalest first`}
-        >
-          <span className="h-2 w-2 rounded-full bg-amber-500" />
-          Gone quiet
-          <span className="text-[var(--text-muted)]">
-            ({quiet.length}) — open with no movement in
-          </span>
-          <label
-            className="flex cursor-auto items-center gap-1 font-normal text-[var(--text-muted)]"
-            title="Your time-to-ghost threshold — how long silence lasts before an application lands here"
-          >
-            <SettingInput
-              value={quietDays}
-              min={1}
-              max={365}
-              onSave={(n) => updateSettings.mutate({ quietDays: n })}
-              className="w-14 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-right text-xs outline-none focus:border-[var(--accent)]"
-            />
-            + days
-          </label>
-        </h2>
-        {quiet.length === 0 ? (
-          <div className="card p-4 text-sm text-[var(--text-muted)]">
-            No open application has been silent for {quietDays}+ days.
-          </div>
-        ) : (
-          <div className="card divide-y divide-[var(--border)]">
-            {quiet.map((a) => (
-              <div key={a.id} className="flex items-center gap-3 p-3">
-                <div className="min-w-0 flex-1">
-                  <Link
-                    to={`/application/${a.id}`}
-                    className="font-medium hover:underline"
-                  >
-                    {a.company}
-                  </Link>
-                  <div className="text-xs text-[var(--text-muted)]">
-                    {a.roleTitle}
-                  </div>
-                </div>
-                <StageBadge stage={a.currentStage} />
-                <span className="w-16 text-right text-xs font-medium text-amber-500">
-                  {daysBetween(a.stageChangedAt)}d quiet
-                </span>
-                <button
-                  onClick={() => setStage.mutate({ id: a.id, stage: "ghosted" })}
-                  title="Record a ghosted event"
-                  className="rounded-lg border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
-                >
-                  Mark ghosted
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
     </div>
   );
 }

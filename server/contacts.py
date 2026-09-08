@@ -6,6 +6,7 @@ Interactions are appended (mirroring the stage_events pattern) and a contact's
 import sqlite3
 from typing import Any, Optional
 
+from . import activity
 from .ids import nanoid, now_iso
 
 CONTACT_EDITABLE = {
@@ -123,15 +124,20 @@ def create_contact(conn: sqlite3.Connection, inp: dict) -> dict:
             now,
         ),
     )
+    activity.record(
+        conn, "contact", contact_id, activity.CREATED,
+        summary=f"Added contact {inp['name']}",
+        contact_id=contact_id,
+        occurred_at=inp.get("nextActionDate"),
+    )
     return get_contact(conn, contact_id)  # type: ignore[return-value]
 
 
 def update_contact(
     conn: sqlite3.Connection, contact_id: str, patch: dict
 ) -> Optional[dict]:
-    if not conn.execute(
-        "SELECT 1 FROM contacts WHERE id = ?", (contact_id,)
-    ).fetchone():
+    before = get_contact(conn, contact_id)
+    if before is None:
         return None
     sets: list[str] = []
     params: dict[str, Any] = {"id": contact_id}
@@ -145,11 +151,34 @@ def update_contact(
         conn.execute(
             f"UPDATE contacts SET {', '.join(sets)} WHERE id = :id", params
         )
-    return get_contact(conn, contact_id)
+    after = get_contact(conn, contact_id)
+    changes = activity.diff(before, after, CONTACT_EDITABLE)
+    if changes and after:
+        activity.record(
+            conn, "contact", contact_id, activity.UPDATED,
+            summary=f"Edited contact {after['name']}",
+            contact_id=contact_id,
+            changes=changes,
+            occurred_at=(
+                after.get("nextActionDate") if "nextActionDate" in changes else None
+            ),
+        )
+    return after
 
 
 def delete_contact(conn: sqlite3.Connection, contact_id: str) -> bool:
+    # Named before the delete: the cascade takes every interaction with it, and
+    # the log has no foreign key back, so this entry outlives the row.
+    row = conn.execute(
+        "SELECT name FROM contacts WHERE id = ?", (contact_id,)
+    ).fetchone()
     cur = conn.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
+    if cur.rowcount and row:
+        activity.record(
+            conn, "contact", contact_id, activity.DELETED,
+            summary=f"Deleted contact {row['name']}",
+            contact_id=contact_id,
+        )
     return cur.rowcount > 0
 
 
@@ -160,22 +189,32 @@ def add_interaction(
         "SELECT 1 FROM contacts WHERE id = ?", (contact_id,)
     ).fetchone():
         return None
+    interaction_id = nanoid()
+    at = inp.get("occurredAt") or now_iso()
     conn.execute(
         """INSERT INTO interactions (id, contact_id, application_id, kind, note, occurred_at)
            VALUES (?, ?, ?, ?, ?, ?)""",
         (
-            nanoid(),
+            interaction_id,
             contact_id,
             inp.get("applicationId"),
             inp["kind"],
             inp.get("note"),
-            inp.get("occurredAt") or now_iso(),
+            at,
         ),
     )
     conn.execute(
         "UPDATE contacts SET updated_at = ? WHERE id = ?", (now_iso(), contact_id)
     )
-    return get_contact(conn, contact_id)
+    contact = get_contact(conn, contact_id)
+    activity.record(
+        conn, "interaction", interaction_id, activity.CREATED,
+        summary=f"Logged {inp['kind']} with {contact['name'] if contact else contact_id}",
+        contact_id=contact_id,
+        application_id=inp.get("applicationId"),
+        occurred_at=at,
+    )
+    return contact
 
 
 def delete_interaction(
@@ -185,8 +224,22 @@ def delete_interaction(
         "SELECT 1 FROM contacts WHERE id = ?", (contact_id,)
     ).fetchone():
         return None
+    row = conn.execute(
+        "SELECT * FROM interactions WHERE id = ? AND contact_id = ?",
+        (interaction_id, contact_id),
+    ).fetchone()
+    contact = get_contact(conn, contact_id)
     conn.execute(
         "DELETE FROM interactions WHERE id = ? AND contact_id = ?",
         (interaction_id, contact_id),
     )
+    if row:
+        activity.record(
+            conn, "interaction", interaction_id, activity.DELETED,
+            summary=f"Removed {row['kind']} with "
+                    f"{contact['name'] if contact else contact_id}",
+            contact_id=contact_id,
+            application_id=row["application_id"],
+            occurred_at=row["occurred_at"],
+        )
     return get_contact(conn, contact_id)

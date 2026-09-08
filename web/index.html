@@ -3,6 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Added to the home screen on a phone, this opens full-screen instead of
+         inside Safari's chrome. theme-color matches --bg in index.css, one per
+         scheme, so the status bar blends into the page rather than banding. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Job Tracker" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0a0b" />
     <title>Job Application Tracker</title>
     <script>
       // Apply the saved theme before first paint to avoid a flash. "system"

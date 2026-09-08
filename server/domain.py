@@ -1,11 +1,19 @@
 """Shared domain vocabulary — the Python port of src/server's domain.ts.
 
-The stage list is deliberately ordered: the funnel stages describe forward
-progression, the terminal stages are exits from it. Current stage is always
-DERIVED from the append-only stage_events log, never stored as a mutable field.
+The stage list is deliberately ordered: the pre-stages sit before the funnel, the
+funnel stages describe forward progression, and the terminal stages are exits from
+it. Current stage is always DERIVED from the append-only stage_events log, never
+stored as a mutable field.
 """
 import datetime as dt
 import re
+from typing import Optional
+
+# Roles you intend to apply to but haven't yet. Deliberately NOT part of the
+# funnel: `applied` stays the funnel floor and index 0, so "top of funnel" keeps
+# its meaning and every rate keeps its denominator. analytics.py excludes rows
+# sitting at a pre-stage entirely — an un-applied role must not move the numbers.
+PRE_STAGES = ["interested"]
 
 FUNNEL_STAGES = [
     "applied",
@@ -18,13 +26,15 @@ FUNNEL_STAGES = [
 
 TERMINAL_STAGES = ["rejected", "withdrawn", "ghosted"]
 
-ALL_STAGES = FUNNEL_STAGES + TERMINAL_STAGES
+ALL_STAGES = PRE_STAGES + FUNNEL_STAGES + TERMINAL_STAGES
 
 # Stages that imply a conversation happened — recording one auto-creates an
 # interview stub so the round can be annotated without re-entering the basics.
+# A pre-stage must never appear here.
 INTERVIEW_STAGES = ["screen", "first-round", "later-round", "final"]
 
 STAGE_LABELS = {
+    "interested": "Interested",
     "applied": "Applied",
     "screen": "Screen",
     "first-round": "First round",
@@ -39,6 +49,79 @@ STAGE_LABELS = {
 
 def is_stage(v: object) -> bool:
     return isinstance(v, str) and v in ALL_STAGES
+
+
+# Where the work happens. Hybrid is the default because it is the common
+# arrangement for these roles — and because the honest answer for a posting
+# that doesn't say is "probably hybrid", not "fully remote".
+WORK_MODES = ["remote", "hybrid", "onsite"]
+DEFAULT_WORK_MODE = "hybrid"
+
+WORK_MODE_LABELS = {
+    "remote": "Remote",
+    "hybrid": "Hybrid",
+    "onsite": "On-site",
+}
+
+
+def is_work_mode(v: object) -> bool:
+    return isinstance(v, str) and v in WORK_MODES
+
+
+# What a salary figure is denominated in. Contract roles quote an hourly rate,
+# so the number alone is ambiguous — $65 and $65,000 are both plausible.
+SALARY_PERIODS = ["year", "hour"]
+DEFAULT_SALARY_PERIOD = "year"
+
+
+def is_salary_period(v: object) -> bool:
+    return isinstance(v, str) and v in SALARY_PERIODS
+
+
+# Where the application came from. Suggestions, not a closed enum — the routes
+# accept any non-empty string, and Discover writes the board's ATS name. What
+# the list buys is consistent casing: `normalize_source` snaps whatever arrives
+# onto the canonical spelling so the Pipeline column and the source filter don't
+# split "referral" from "Referral". Keep in sync with web/src/types.ts.
+SOURCES = [
+    "LinkedIn",
+    "Indeed",
+    "Referral",
+    "Recruiter",
+    "Direct",
+    "Company site",
+    "Other",
+]
+# The UI's pick for a new application; the fallback for one that arrives without
+# a source is "Other", since an unstated channel is unknown, not LinkedIn.
+DEFAULT_SOURCE = "LinkedIn"
+FALLBACK_SOURCE = "Other"
+
+# Discover stores the board's ATS as the source; these are their display
+# spellings. Keys match job_boards.ats (see discovery.py).
+ATS_SOURCE_LABELS = {
+    "greenhouse": "Greenhouse",
+    "lever": "Lever",
+    "ashby": "Ashby",
+    "smartrecruiters": "SmartRecruiters",
+    "workday": "Workday",
+}
+
+# Every spelling we know, folded for lookup. Built once — this runs on every write.
+_SOURCE_BY_FOLD = {s.casefold(): s for s in [*SOURCES, *ATS_SOURCE_LABELS.values()]}
+
+
+def normalize_source(v: object) -> Optional[str]:
+    """Snap a source onto its canonical casing, or pass it through as typed.
+
+    Unlike extract._coerce, an unrecognized value is kept rather than dropped:
+    source is free text by design, and someone who types "Hiring event" should
+    keep it. Only the casing of the known spellings is enforced.
+    """
+    if not isinstance(v, str) or not v.strip():
+        return None
+    s = v.strip()
+    return _SOURCE_BY_FOLD.get(s.casefold(), s)
 
 
 def is_iso_date(v: object) -> bool:

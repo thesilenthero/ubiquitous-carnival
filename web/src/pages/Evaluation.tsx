@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCreateApplication } from "../api";
-import { SOURCES, type Application, type FetchedPosting } from "../types";
+import {
+  DEFAULT_SOURCE,
+  SOURCES,
+  type Application,
+  type FetchedPosting,
+} from "../types";
 import { AutofillPosting } from "../components/AutofillPosting";
 import {
   DIMENSIONS,
@@ -19,13 +24,13 @@ import {
   type Notes,
   type Scores,
 } from "../lib/evaluation";
+import { todayIso } from "../lib/format";
 
 const inputCls =
-  "w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]";
+  "input w-full";
 const labelCls = "mb-1 block text-xs font-medium text-[var(--text-muted)]";
 
 const DRAFT_KEY = "job-tracker:evaluation-draft:v1";
-const todayStr = () => new Date().toISOString().slice(0, 10);
 
 interface Draft {
   company: string;
@@ -44,8 +49,8 @@ function freshDraft(): Draft {
   return {
     company: "",
     roleTitle: "",
-    source: "Indeed",
-    dateApplied: todayStr(),
+    source: DEFAULT_SOURCE as string,
+    dateApplied: todayIso(),
     jobUrl: "",
     jobDescription: "",
     scores: emptyScores(),
@@ -165,7 +170,7 @@ export default function Evaluation() {
   return (
     <div className="max-w-5xl">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Job evaluation</h1>
+        <h1 className="page-title">Job evaluation</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Score a posting across seven weighted dimensions, then convert a strong
           fit into a pipeline application. Nothing is saved until you convert.
@@ -372,7 +377,7 @@ export default function Evaluation() {
               <span className="text-lg text-[var(--text-muted)]">/ 100</span>
             </div>
             <div
-              className="mt-3 inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold text-white"
+              className="mt-3 inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold text-[var(--on-stage)]"
               style={{ background: VERDICT_COLORS[verdict.key] }}
             >
               {verdict.label}
@@ -411,7 +416,7 @@ export default function Evaluation() {
             </div>
 
             {create.isError && (
-              <p className="mt-3 text-sm text-red-600">
+              <p className="mt-3 text-sm text-[var(--danger)]">
                 {(create.error as Error).message}
               </p>
             )}
@@ -426,7 +431,7 @@ export default function Evaluation() {
                     ? "Save this evaluation onto a new pipeline application"
                     : "Add a company and role title first"
                 }
-                className="w-full rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                className="btn btn-primary btn-lg w-full"
               >
                 {create.isPending ? "Converting…" : "Convert to application"}
               </button>
@@ -434,14 +439,14 @@ export default function Evaluation() {
                 <button
                   type="button"
                   onClick={copySummary}
-                  className="flex-1 rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
+                  className="btn btn-secondary flex-1"
                 >
                   {copied ? "Copied ✓" : "Copy summary"}
                 </button>
                 <button
                   type="button"
                   onClick={reset}
-                  className="flex-1 rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
+                  className="btn btn-secondary flex-1"
                 >
                   Reset
                 </button>
