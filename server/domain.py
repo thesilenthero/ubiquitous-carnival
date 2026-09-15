@@ -51,6 +51,100 @@ def is_stage(v: object) -> bool:
     return isinstance(v, str) and v in ALL_STAGES
 
 
+# --- Effort ----------------------------------------------------------------
+# Everything above measures OUTCOMES. A week spent entirely preparing for two
+# screens moves none of it, and so reads exactly like a week spent doing
+# nothing. These weights measure INPUT instead: what the week actually cost,
+# in units where one application sent = 1.
+#
+# The zeros are the load-bearing part. An offer or a rejection arriving is not
+# something you did — scoring it would credit you for the week a company
+# happened to reply. `interested` is 0 for the same reason it sits outside the
+# funnel: docketing a role is a bookmark, not work.
+STAGE_EFFORT = {
+    "interested": 0,
+    "applied": 1,
+    "screen": 2,
+    "first-round": 3,
+    "later-round": 4,
+    "final": 4,
+    "offer": 0,
+    "rejected": 0,
+    "withdrawn": 0,
+    "ghosted": 0,
+}
+
+# A flat rate rather than a per-kind map, because `interactions.kind` is free
+# text: a map would be a map with a hole in it the first time you typed a kind
+# nobody had thought of. Sending a message costs about what sending a message
+# costs, whether you call it outreach or a follow-up.
+#
+# Half an application, matching the `networking` kind below. Not a claim that
+# outreach is half the work — it is a claim about what it has been worth here,
+# and the score is meant to reflect the search actually being run.
+INTERACTION_EFFORT = 0.5
+
+# Work that leaves no other record anywhere in the tracker — the reason this
+# feature needs a table of its own rather than just a weighting of what is
+# already logged. Preparing for a screen writes nothing: no stage moves, no
+# contact is touched, no document is attached. Without these, the two days
+# before an interview are indistinguishable from two days off.
+#
+# One entry means one session. There is no hours field on purpose: a duration
+# is a decision every single time you log, and the weights already carry the
+# only distinction that matters — a take-home is not a coffee chat.
+EFFORT_KINDS = {
+    "interview-prep": {
+        "weight": 2, "label": "Interview prep", "category": "prep",
+    },
+    "take-home": {
+        "weight": 4, "label": "Take-home / assessment", "category": "prep",
+    },
+    "application-prep": {
+        "weight": 1, "label": "Tailoring resume / letter", "category": "prep",
+    },
+    "skill-practice": {
+        "weight": 2, "label": "Skill practice", "category": "prep",
+    },
+    "research": {
+        "weight": 1, "label": "Company / role research", "category": "prep",
+    },
+    # Half an application, deliberately: networking has not converted on this
+    # search, and a score that priced it level with applying would keep
+    # reporting good weeks for the activity that has produced least.
+    # INTERACTION_EFFORT matches it, so both halves of the networking stack
+    # move together.
+    "networking": {
+        "weight": 0.5, "label": "Networking event", "category": "networking",
+    },
+    "other": {"weight": 1, "label": "Other", "category": "prep"},
+}
+
+# The stacked segments of the weekly chart, in stack order. Deliberately four
+# and not one-per-source: a stack with a segment per stage would be mostly
+# zero-height slivers, and the per-item detail lives in the tooltip anyway.
+EFFORT_CATEGORIES = {
+    "applications": "Applications",
+    "interviews": "Interviews",
+    "prep": "Prep & practice",
+    "networking": "Networking",
+}
+
+# Which category a scored stage event belongs to. Stages worth 0 never reach
+# here, so only the stages that cost something need an entry.
+STAGE_EFFORT_CATEGORY = {
+    "applied": "applications",
+    "screen": "interviews",
+    "first-round": "interviews",
+    "later-round": "interviews",
+    "final": "interviews",
+}
+
+
+def is_effort_kind(v: object) -> bool:
+    return isinstance(v, str) and v in EFFORT_KINDS
+
+
 # Where the work happens. Hybrid is the default because it is the common
 # arrangement for these roles — and because the honest answer for a posting
 # that doesn't say is "probably hybrid", not "fully remote".

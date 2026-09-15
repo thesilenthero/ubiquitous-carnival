@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  exportUrl,
   useApplication,
+  useApplicationExport,
   useAddInterview,
   useDeleteInterview,
   useDeleteStageEvent,
@@ -52,6 +54,7 @@ import {
 export default function Detail() {
   const { id } = useParams();
   const { data: app, isLoading } = useApplication(id);
+  const exported = useApplicationExport(id);
   const update = useUpdateApplication();
   const setStage = useSetStage();
   const delEvent = useDeleteStageEvent();
@@ -63,6 +66,7 @@ export default function Detail() {
   const [stageNote, setStageNote] = useState("");
   const [stageDate, setStageDate] = useState(todayIso());
   const [showJd, setShowJd] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   if (isLoading)
     return (
@@ -78,6 +82,17 @@ export default function Detail() {
 
   const save = (patch: Partial<Application>) =>
     update.mutate({ id: app.id, patch });
+
+  // Synchronous on purpose: the text was fetched when the page opened, so the
+  // copy runs inside the tap itself. That is what lets the legacy copy command
+  // work over plain http on the LAN, where navigator.clipboard does not exist.
+  const copyExport = () => {
+    const text = exported.data;
+    const ok = !!text && copyText(text);
+    setCopyState(ok ? "copied" : "failed");
+    if (!ok) exported.refetch();
+    setTimeout(() => setCopyState("idle"), 1500);
+  };
 
   const events = [...(app.events ?? [])].sort((a, b) =>
     b.occurredAt.localeCompare(a.occurredAt),
@@ -109,6 +124,27 @@ export default function Detail() {
         </div>
         <div className="flex flex-col items-end gap-2">
           <StageBadge stage={app.currentStage} />
+          <button
+            onClick={copyExport}
+            disabled={exported.isLoading}
+            title="Copy this job — details, timeline, interviews, JD, resume and cover letter — as Markdown to paste into Claude"
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+          >
+            {copyState === "copied"
+              ? "Copied ✓"
+              : copyState === "failed"
+                ? "Copy failed — try again"
+                : exported.isLoading
+                  ? "Preparing…"
+                  : "Copy for Claude"}
+          </button>
+          <a
+            href={exportUrl(app.id, true)}
+            title="Download the same export as a .md file"
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+          >
+            Download .md
+          </a>
           <button
             onClick={() => save({ archived: !app.archived })}
             className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
@@ -383,7 +419,24 @@ export default function Detail() {
                   style={{ background: STAGE_COLORS[e.stage] }}
                 />
                 <div className="flex items-center justify-between">
-                  <div className="font-medium">{STAGE_LABELS[e.stage]}</div>
+                  <select
+                    value={e.stage}
+                    onChange={(ev) =>
+                      updateEvent.mutate({
+                        id: app.id,
+                        eventId: e.id,
+                        stage: ev.target.value as Stage,
+                      })
+                    }
+                    className="input-quiet -ml-1 font-medium"
+                    title="Edit stage — the interview round stays attached"
+                  >
+                    {ALL_STAGES.map((s) => (
+                      <option key={s} value={s}>
+                        {STAGE_LABELS[s]}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     onClick={() =>
                       delEvent.mutate({ id: app.id, eventId: e.id })
@@ -413,7 +466,26 @@ export default function Detail() {
                     <span>· {durationDays}d in previous stage</span>
                   )}
                 </div>
-                {e.note && <div className="mt-0.5 text-sm">{e.note}</div>}
+                <input
+                  // Keyed on the saved note so a server update resets the draft.
+                  key={e.note ?? ""}
+                  defaultValue={e.note ?? ""}
+                  placeholder="Add note…"
+                  onBlur={(ev) => {
+                    const v = ev.target.value.trim();
+                    if (v !== (e.note ?? ""))
+                      updateEvent.mutate({
+                        id: app.id,
+                        eventId: e.id,
+                        note: v || null,
+                      });
+                  }}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter") ev.currentTarget.blur();
+                  }}
+                  className="input-quiet -ml-1 mt-0.5 w-full text-sm"
+                  title="Edit note"
+                />
               </li>
             );
           })}
@@ -602,4 +674,32 @@ function InterviewCard({
       />
     </div>
   );
+}
+
+// Copy via a throwaway textarea and the legacy copy command. Deprecated, but it
+// is the one method that works both in a secure context and over plain http,
+// and it is synchronous — which Safari requires of anything run from a tap.
+// Only if it refuses is the async Clipboard API tried, where one exists.
+function copyText(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "0";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length); // iOS ignores select() alone
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  if (!ok && navigator.clipboard) {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return true;
+  }
+  return ok;
 }

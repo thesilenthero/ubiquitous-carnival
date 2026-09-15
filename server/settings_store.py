@@ -16,6 +16,13 @@ NUMERIC_SETTINGS: dict[str, tuple[float, float, float]] = {
     # a silence from it counts as "no screen". Below this it is still pending,
     # not a miss, so it stays out of the denominator entirely.
     "screenWindowDays": (14, 1, 365),
+    # Analytics effort score: the weekly goal line on the effort chart. In the
+    # same units as server/domain.py's weights, where one application sent = 1,
+    # so the default is roughly "ten applications, or the interviews and prep
+    # that displaced them". Its own knob rather than a multiple of
+    # weeklyTarget: a week of final rounds should count as a good week even
+    # though it sends nothing.
+    "weeklyEffortTarget": (20, 1, 500),
 }
 
 

@@ -22,6 +22,7 @@ from .routers import (
     contacts,
     data,
     discovery,
+    effort,
     next_steps,
     postings,
     suggestions,
@@ -54,6 +55,7 @@ app.include_router(contacts.router, prefix="/api/contacts")
 app.include_router(suggestions.router, prefix="/api/suggestions")
 app.include_router(data.router, prefix="/api")
 app.include_router(activity.router, prefix="/api")
+app.include_router(effort.router, prefix="/api")
 app.include_router(next_steps.router, prefix="/api")
 app.include_router(postings.router, prefix="/api")
 app.include_router(discovery.router, prefix="/api")

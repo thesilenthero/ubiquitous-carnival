@@ -132,6 +132,7 @@ change, under fixed names:
     job-interviews.csv
     job-interactions.csv
     job-activity.csv
+    job-effort.csv
 ```
 
 Always the same filenames, overwritten in place: no timestamp in the name, so
@@ -363,7 +364,17 @@ conflation this feature exists to end. The tag is there so any later
 "how fast do I hear back" metric excludes a guess instead of reading it as an
 observation.
 
-`settings` — key/value store; currently the weekly application goal.
+`effort_entries` — hand-logged work that writes to nothing else: interview
+prep, a take-home, an hour of practice. `(kind, occurred_at, note,
+application_id)`, one row per session. It exists because everything else the
+tracker records is a side effect of something happening *to* an application,
+and the two days before a screen touch nothing at all — so they score zero on
+every outcome metric here, which is the opposite of the truth. The link to an
+application is `ON DELETE SET NULL` rather than cascading, alone among the child
+tables: the hour was spent whether or not you later delete the role.
+
+`settings` — key/value store: the weekly application goal, the weekly effort
+goal, and the stale / quiet / screen-window thresholds.
 
 ## Views
 
@@ -419,7 +430,50 @@ observation.
   (Industry / Role type), and time-in-stage distribution. A date-range
   picker (All / 30d / 90d / custom) windows everything by date applied, and
   the weekly chart shows an editable **applications-per-week goal** with
-  this-week pace and a 4-week average.
+  this-week pace and a 4-week average. Alongside it, an **effort score**
+  (below).
+
+### The effort score
+
+Every other number on the Analytics page measures an *outcome*: applications
+sent, screen rate, conversion, days to first response. None of them measure the
+work. Spend two days preparing for a screen and every chart reads exactly like
+two days off — which is backwards, and it is the one thing the page was
+consistently wrong about.
+
+Effort prices what a week cost, in units where **one application sent = 1**:
+
+| | |
+| --- | --- |
+| Applied | 1 |
+| Screen | 2 |
+| First round | 3 |
+| Later / final round | 4 |
+| Contact interaction | 1 |
+| Logged prep session | 1–4 by kind (`server/domain.py`) |
+
+The zeros are the load-bearing part. `offer`, `rejected`, `withdrawn` and
+`ghosted` are worth nothing: a rejection arriving is not something you did, and
+scoring it would credit you for the week a company happened to reply.
+`interested` is 0 for the same reason it sits outside the funnel. Attachment
+uploads are unscored too — they are the largest single bucket of activity in
+this database, and counting them would turn the metric into a PDF counter when
+the tailoring is already priced into `applied`.
+
+Two halves make the number. The derived half is read straight off
+`stage_events` and `interactions` — not off the activity log, which has no
+stage column, carries orphaned rows for events since deleted, and whose
+`recorded_at` is a backfilled guess for most of its history. The logged half is
+`effort_entries`, and it is why the feature needs a table at all: prep writes
+to nothing, so no weighting of existing rows could ever see it. One entry is
+one session, with no hours field — a duration is a decision every time you log,
+and logging has to stay cheap enough to do on the day you're busy preparing.
+
+Weeks are bucketed by **when the work happened** (`occurred_at`), so booking
+Thursday's round on Monday credits Thursday, the day you sit through it. That
+makes the date-range picker mean something different for this one card — it
+bounds the weeks shown rather than filtering applications by date applied — and
+the card says so out loud, because the two cannot be read as the same filter.
 
 Stage transitions can be dated (default: today) and any past event's date edited
 inline. A **System / Light / Dark** theme toggle lives in the sidebar.
@@ -460,13 +514,14 @@ response, and Connect Date are reconstructed as interaction-log entries;
 Next steps + Follow-up by become the contact's next action.
 
 **Data export** (sidebar → *Export data*, or `GET /api/export.zip`) dumps all
-data as five CSVs — `applications.csv` (every field, plus the stage history
+data as six CSVs — `applications.csv` (every field, plus the stage history
 flattened into one cell), `stage-events.csv` (the same log unflattened, with the
 notes the flattened cell drops), `interviews.csv`, `interactions.csv` (every
-engagement with a contact, and the application it was about), and
-`activity.csv` (the change log). An escape hatch against lock-in and a
+engagement with a contact, and the application it was about),
+`activity.csv` (the change log), and `effort.csv` (hand-logged prep and
+practice, with each entry's weight). An escape hatch against lock-in and a
 migration safety net. `GET /api/export.csv` still returns the applications
-sheet on its own. The same five are what the mirrors keep current on their own,
+sheet on its own. The same six are what the mirrors keep current on their own,
 as files (*The synced CSVs*) and as a spreadsheet (*The Google Sheet*). Retire
 Sheets/Tableau only after a side-by-side check that the funnel and rate metrics
 match.
@@ -491,13 +546,16 @@ match.
 | GET/POST | `/api/suggestions` | pending suggestions / create (for scanners) |
 | POST | `/api/suggestions/:id/accept` | accept → appends the stage event |
 | POST | `/api/suggestions/:id/dismiss` | dismiss without logging |
-| GET/PATCH | `/api/settings` | weekly goal etc. |
+| GET/PATCH | `/api/settings` | weekly application goal, weekly effort goal, thresholds |
 | GET | `/api/next-steps` | the computed play queue — derived, never stored |
 | POST | `/api/next-steps/snooze` | `{id, days?}` → hide one play for a week |
 | GET | `/api/analytics` | live computed metrics (`?from=&to=` window on date applied) |
 | GET | `/api/activity` | the activity log — read-only; see below |
-| GET | `/api/export.zip` | full export — applications, stage events, interviews, engagements, activity |
+| GET/POST | `/api/effort` | logged effort sessions / log one |
+| DELETE | `/api/effort/:id` | remove a logged session |
+| GET | `/api/export.zip` | full export — applications, stage events, interviews, engagements, activity, effort |
 | GET | `/api/export.csv` | the applications sheet on its own |
+| GET | `/api/applications/:id/export.md` | one application as Markdown context for an LLM (`?download=1` for a file) — the Detail page's *Copy for Claude* |
 | GET | `/api/sheets/status` | Google Sheet mirror: configured? last synced? last error? |
 | POST | `/api/sheets/sync` | push to the Google Sheet now |
 | POST | `/api/import` | CSV migration import |

@@ -9,7 +9,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from .domain import ATS_SOURCE_LABELS, SOURCES
+from .domain import ATS_SOURCE_LABELS, INTERVIEW_STAGES, SOURCES
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("DB_PATH") or str(REPO_ROOT / "data" / "app.db")
@@ -185,7 +185,7 @@ SCHEMA = """
       id             TEXT PRIMARY KEY,
       entity         TEXT NOT NULL,   -- application/stage_event/interview/contact/
                                       -- interaction/attachment/suggestion/board/
-                                      -- posting/snooze/settings
+                                      -- posting/snooze/settings/effort
       entity_id      TEXT NOT NULL,
       action         TEXT NOT NULL,   -- created | updated | deleted
       application_id TEXT,            -- denormalized owner, for a per-app timeline
@@ -210,6 +210,27 @@ SCHEMA = """
       until      TEXT NOT NULL,      -- ISO date; hidden while today < until
       created_at TEXT NOT NULL
     );
+
+    -- Work that leaves no other record: interview prep, a take-home, an hour
+    -- of practice. Every other table here is written as a side effect of
+    -- something happening TO an application; this one exists because the two
+    -- days before a screen touch nothing at all, and so score zero on every
+    -- outcome metric the tracker has. See server/effort.py.
+    --
+    -- application_id is ON DELETE SET NULL, alone among the child tables here,
+    -- which all cascade. The hour you spent preparing was real work whether or
+    -- not you later delete the application it was for; cascading would quietly
+    -- rewrite a past week's effort downward.
+    CREATE TABLE IF NOT EXISTS effort_entries (
+      id             TEXT PRIMARY KEY,
+      kind           TEXT NOT NULL,   -- a key from domain.EFFORT_KINDS
+      occurred_at    TEXT NOT NULL,   -- ISO date: the day the work happened
+      note           TEXT,
+      application_id TEXT REFERENCES applications(id) ON DELETE SET NULL,
+      created_at     TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_effort_occurred
+      ON effort_entries(occurred_at);
 
     -- The attached PDFs themselves. Their own table rather than BLOB columns on
     -- `applications`, because the list view reads `SELECT * FROM applications`
@@ -312,6 +333,44 @@ def _normalize_sources(conn: sqlite3.Connection) -> None:
             """UPDATE applications SET source = :canonical
                 WHERE source = :canonical COLLATE NOCASE AND source != :canonical""",
             {"canonical": canonical},
+        )
+
+
+def _relink_orphaned_interviews(conn: sqlite3.Connection) -> None:
+    """Repair interview rounds whose stage event was deleted out from under them.
+
+    Deleting a stage event keeps a round that has notes in it (only an empty
+    stub goes with the event), and that round used to keep pointing at the
+    event that no longer existed. The usual cause: a round recorded as
+    later-round, deleted, and re-recorded as final on the same day.
+
+    So an orphan is re-attached to the interview-stage event on its own date,
+    provided exactly one such event exists and no other round already claims
+    it. Anything ambiguous is detached (NULL) instead, so it reads as a round
+    added by hand. Either way nothing points at a missing event. Idempotent: a
+    startup with no orphans issues no writes.
+    """
+    placeholders = ",".join("?" * len(INTERVIEW_STAGES))
+    orphans = conn.execute(
+        """SELECT i.id, i.application_id, i.date FROM interviews i
+            WHERE i.stage_event_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM stage_events e WHERE e.id = i.stage_event_id)"""
+    ).fetchall()
+    for row in orphans:
+        matches = conn.execute(
+            f"""SELECT e.id FROM stage_events e
+                 WHERE e.application_id = ?
+                   AND e.stage IN ({placeholders})
+                   AND substr(e.occurred_at, 1, 10) = ?
+                   AND NOT EXISTS (
+                     SELECT 1 FROM interviews o WHERE o.stage_event_id = e.id
+                   )""",
+            (row["application_id"], *INTERVIEW_STAGES, row["date"]),
+        ).fetchall()
+        target = matches[0]["id"] if len(matches) == 1 else None
+        conn.execute(
+            "UPDATE interviews SET stage_event_id = ? WHERE id = ?",
+            (target, row["id"]),
         )
 
 
@@ -490,6 +549,8 @@ def init_schema() -> None:
         _normalize_sources(conn)
         # Two interview note fields became one; see the docstring.
         _merge_interview_questions(conn)
+        # Rounds left pointing at a deleted stage event; see the docstring.
+        _relink_orphaned_interviews(conn)
         # Last: the backfill reads columns the migrations above may have just
         # added, and it should see the final state of every row.
         _backfill_activity(conn)

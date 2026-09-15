@@ -3,6 +3,7 @@ import { useSettings } from "../api";
 import {
   DEFAULT_QUIET_DAYS,
   DEFAULT_SCREEN_WINDOW_DAYS,
+  DEFAULT_WEEKLY_EFFORT_TARGET,
   DEFAULT_STALE_DAYS,
   FUNNEL_STAGES,
   PRE_STAGES,
@@ -34,6 +35,8 @@ export default function Guide() {
   const quietDays = settings?.quietDays ?? DEFAULT_QUIET_DAYS;
   const screenWindowDays =
     settings?.screenWindowDays ?? DEFAULT_SCREEN_WINDOW_DAYS;
+  const effortTarget =
+    settings?.weeklyEffortTarget ?? DEFAULT_WEEKLY_EFFORT_TARGET;
   return (
     <div className="max-w-3xl">
       <header className="mb-5">
@@ -183,9 +186,12 @@ export default function Guide() {
           </li>
           <li>
             <b>Stage history</b> — record a transition with an optional
-            back-dated date and note. Edit any event's date inline (this can
-            reorder history and re-derive the current stage — intended).
-            Delete an event with ✕; the last remaining event can't be deleted.
+            back-dated date and note. Edit any event's stage, date, or note
+            inline — a date change can reorder history and re-derive the current
+            stage (intended). Relabel a mislabeled round (say, Later round →
+            Final) in place rather than deleting it: its interview notes stay
+            attached. Delete an event with ✕; a round with notes survives as a
+            standalone round, and the last remaining event can't be deleted.
           </li>
         </ul>
       </Section>
@@ -309,6 +315,24 @@ export default function Guide() {
             green at target); the 4-week average sits beside it.
           </li>
           <li>
+            <b>Effort per week</b> — what a week <i>cost</i>, as opposed to what
+            it produced. Everything else on this page measures an outcome, so
+            two days spent preparing for a screen score the same as two days
+            off. Weights are in units where one application sent = 1: a screen
+            is 2, a first round 3, a later or final round 4, a contact
+            interaction ½. Outcomes are deliberately worth nothing — a
+            rejection arriving is not something you did.
+          </li>
+          <li>
+            <b>Logging effort</b> — prep, take-homes and practice write to
+            nothing else in the tracker, so no metric can derive them. Log them
+            under the chart ({effortTarget} is the weekly goal, editable in the
+            card header) and they count. One entry is one session; there is no
+            hours field on purpose. Note this card reads the date range
+            differently from the rest of the page: weeks are counted by when
+            the work happened, not by date applied.
+          </li>
+          <li>
             <b>Time in stage</b> — median days spent in each stage before
             moving on (ongoing time counts for open applications).
           </li>
@@ -326,10 +350,19 @@ export default function Guide() {
       <Section id="data" title="Data, import & export">
         <ul>
           <li>
-            <b>Export data</b> (sidebar) — a zip of four CSVs: applications
+            <b>Export data</b> (sidebar) — a zip of six CSVs: applications
             (every field, plus job descriptions), the stage log with its notes,
-            interviews, and engagements. Your escape hatch against lock-in;
-            nothing is only in the app.
+            interviews, engagements, the activity log, and logged effort. Your
+            escape hatch against lock-in; nothing is only in the app.
+          </li>
+          <li>
+            <b>Copy for Claude</b> (application page header) — one job as a
+            single Markdown document: summary, a dated timeline of stages,
+            linked interactions and effort, interview notes, evaluation, notes,
+            the job description, and the text of the resume and cover letter
+            that went out. Paste it into a chat as context, or use{" "}
+            <b>Download .md</b> to attach it as a file. Only contacts linked to
+            the job are included — the referrer and interactions tagged to it.
           </li>
           <li>
             <b>Sheet importers</b> — <code>scripts/import_sheet.py</code>{" "}

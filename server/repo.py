@@ -393,22 +393,7 @@ def add_stage_event(
     )
     stub_id: Optional[str] = None
     if stage in INTERVIEW_STAGES:
-        now = now_iso()
-        stub_id = nanoid()
-        conn.execute(
-            _INSERT_INTERVIEW,
-            {
-                "id": stub_id,
-                "application_id": app_id,
-                "stage_event_id": event_id,
-                "date": at[:10],
-                "format": None,
-                "interviewers": None,
-                "notes": None,
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
+        stub_id = _attach_interview(conn, app_id, event_id, at)
     if stage == "applied" and not _has_applied_event(conn, app_id, event_id):
         # A role moves off the docket the first time it reaches `applied`. That
         # event's date IS the date applied, so it replaces the placeholder
@@ -443,6 +428,67 @@ def add_stage_event(
             occurred_at=at[:10],
         )
     return app
+
+
+def _attach_interview(
+    conn: sqlite3.Connection, app_id: str, event_id: str, at: str
+) -> Optional[str]:
+    """Give an interview-stage event its round. Returns the id of a NEWLY
+    created stub, or None when an existing round was adopted instead.
+
+    Adopting covers the delete-and-re-record path: a round with notes survives
+    its event's deletion unlinked, and re-recording the stage on that same day
+    should pick it back up rather than spawn an empty duplicate beside it.
+    Only an unambiguous match is adopted.
+    """
+    date = at[:10]
+    loose = conn.execute(
+        """SELECT id FROM interviews
+            WHERE application_id = ? AND stage_event_id IS NULL AND date = ?""",
+        (app_id, date),
+    ).fetchall()
+    if len(loose) == 1:
+        conn.execute(
+            "UPDATE interviews SET stage_event_id = ? WHERE id = ?",
+            (event_id, loose[0]["id"]),
+        )
+        return None
+    now = now_iso()
+    stub_id = nanoid()
+    conn.execute(
+        _INSERT_INTERVIEW,
+        {
+            "id": stub_id,
+            "application_id": app_id,
+            "stage_event_id": event_id,
+            "date": date,
+            "format": None,
+            "interviewers": None,
+            "notes": None,
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    return stub_id
+
+
+def _release_interviews(
+    conn: sqlite3.Connection, app_id: str, event_id: str
+) -> list:
+    """Undo an event's claim on its rounds: empty stubs are deleted (returned,
+    for the activity log), filled-in rounds are kept but unlinked so they never
+    point at an event that no longer exists or is no longer an interview."""
+    empty = """FROM interviews
+                WHERE stage_event_id = ? AND application_id = ?
+                  AND format IS NULL AND interviewers IS NULL
+                  AND notes IS NULL"""
+    stubs = conn.execute(f"SELECT id, date {empty}", (event_id, app_id)).fetchall()
+    conn.execute(f"DELETE {empty}", (event_id, app_id))
+    conn.execute(
+        "UPDATE interviews SET stage_event_id = NULL WHERE stage_event_id = ? AND application_id = ?",
+        (event_id, app_id),
+    )
+    return stubs
 
 
 def _has_applied_event(
@@ -492,11 +538,18 @@ def update_stage_event(
     conn: sqlite3.Connection, app_id: str, event_id: str, patch: dict
 ) -> Optional[dict]:
     """Edit an existing stage event — its date, stage, or note. Changing the
-    date can reorder events and thus re-derive the current stage (intended)."""
+    date can reorder events and thus re-derive the current stage (intended).
+
+    Changing the stage keeps the event's interview round consistent: moving
+    between interview stages (later-round -> final) leaves the round as is;
+    moving into one attaches a round; moving out releases it (see
+    _release_interviews)."""
     if not _app_exists(conn, app_id):
         return None
     row = _event_row(conn, app_id, event_id)
     before = _map_event(row) if row else None
+    stub_id: Optional[str] = None
+    released: list = []
     sets: list[str] = []
     params: dict[str, Any] = {"id": event_id, "app": app_id}
     if "stage" in patch:
@@ -517,17 +570,39 @@ def update_stage_event(
             "UPDATE applications SET updated_at = ? WHERE id = ?",
             (now_iso(), app_id),
         )
-    app = get_application(conn, app_id)
     row = _event_row(conn, app_id, event_id)
     after = _map_event(row) if row else None
+    if before and after:
+        was = before["stage"] in INTERVIEW_STAGES
+        now = after["stage"] in INTERVIEW_STAGES
+        if now and not was:
+            stub_id = _attach_interview(conn, app_id, event_id, after["occurredAt"])
+        elif was and not now:
+            released = _release_interviews(conn, app_id, event_id)
+    app = get_application(conn, app_id)
+    label = _label(app) if app else app_id
     changes = activity.diff(before, after, ("stage", "note", "occurredAt"))
     if changes and after:
         activity.record(
             conn, "stage_event", event_id, activity.UPDATED,
-            summary=f"Edited {after['stage']} for {_label(app) if app else app_id}",
+            summary=f"Edited {after['stage']} for {label}",
             application_id=app_id,
             changes=changes,
             occurred_at=after["occurredAt"],
+        )
+    if stub_id and after:
+        activity.record(
+            conn, "interview", stub_id, activity.CREATED,
+            summary=f"Interview stub for {label}",
+            application_id=app_id,
+            occurred_at=after["occurredAt"][:10],
+        )
+    for stub in released:
+        activity.record(
+            conn, "interview", stub["id"], activity.DELETED,
+            summary=f"Removed interview stub from {label}",
+            application_id=app_id,
+            occurred_at=stub["date"],
         )
     return app
 
@@ -537,7 +612,7 @@ def delete_stage_event(
 ) -> Optional[dict]:
     """Delete a single stage event. Guarded so an application always retains
     at least one event. An auto-created interview stub goes with it, but only
-    while still empty — filled-in notes survive."""
+    while still empty — a filled-in round survives, unlinked."""
     n = conn.execute(
         "SELECT COUNT(*) AS n FROM stage_events WHERE application_id = ?",
         (app_id,),
@@ -549,20 +624,7 @@ def delete_stage_event(
     row = _event_row(conn, app_id, event_id)
     app = get_application(conn, app_id)
     label = _label(app) if app else app_id
-    stubs = conn.execute(
-        """SELECT id, date FROM interviews
-           WHERE stage_event_id = ? AND application_id = ?
-             AND format IS NULL AND interviewers IS NULL
-             AND notes IS NULL""",
-        (event_id, app_id),
-    ).fetchall()
-    conn.execute(
-        """DELETE FROM interviews
-           WHERE stage_event_id = ? AND application_id = ?
-             AND format IS NULL AND interviewers IS NULL
-             AND notes IS NULL""",
-        (event_id, app_id),
-    )
+    stubs = _release_interviews(conn, app_id, event_id)
     conn.execute(
         "DELETE FROM stage_events WHERE id = ? AND application_id = ?",
         (event_id, app_id),

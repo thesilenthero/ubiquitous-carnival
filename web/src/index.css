@@ -53,6 +53,7 @@
   --d-chart-1: #7c83f0;
   --d-chart-2: #22b8d4;
   --d-chart-3: #26a866;
+  --d-chart-4: #d946ef;
 
   /* --- light palette (the default theme) --------------------------------- */
   --bg: #fafafa;
@@ -118,14 +119,19 @@
   --stage-withdrawn: #78716c;
   --stage-ghosted: #d97706;
 
-  /* A categorical trio for the one chart that plots three stages side by side.
+  /* A categorical set for the charts that plot several series side by side.
      The stage scale itself is an ordered ramp — adjacent steps are meant to sit
      close, which is wrong for series a reader has to tell apart. Validated with
-     the dataviz palette checker: CVD ΔE 16.1, normal-vision ΔE 17.4, all three
-     above 3:1 on both surfaces. */
+     the dataviz palette checker: CVD ΔE 16.1, normal-vision ΔE 17.4, all four
+     above 3:1 on both surfaces.
+     The fourth is fuchsia rather than the obvious warm amber: amber, orange and
+     rose all collapse toward chart-3's green under protanopia (ΔE ~6, below the
+     8 floor), and this stack is read by area, where a legend swatch is the only
+     other cue. Re-run the checker before changing any of these. */
   --chart-1: #4f46e5;
   --chart-2: #0891b2;
   --chart-3: #16a34a;
+  --chart-4: #c026d3;
 }
 
 /* The two ways dark mode turns on. Both pull from the same --d-* values. */
@@ -164,6 +170,7 @@
   --chart-1: var(--d-chart-1);
   --chart-2: var(--d-chart-2);
   --chart-3: var(--d-chart-3);
+  --chart-4: var(--d-chart-4);
 
   color-scheme: dark;
 }
@@ -204,6 +211,7 @@
     --chart-1: var(--d-chart-1);
     --chart-2: var(--d-chart-2);
     --chart-3: var(--d-chart-3);
+    --chart-4: var(--d-chart-4);
 
     color-scheme: dark;
   }

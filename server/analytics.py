@@ -8,6 +8,7 @@ import sqlite3
 from typing import Optional
 
 from .domain import FUNNEL_STAGES, PRE_STAGES, TERMINAL_STAGES, parse_ts
+from .effort import score_per_week
 from .settings_store import get_settings
 
 DAY_MS = 24 * 60 * 60 * 1000
@@ -364,4 +365,11 @@ def compute_analytics(
         "perWeek": per_week,
         "timeInStage": time_in_stage,
         "pace": pace,
+        # What the week COST, as opposed to what it produced. Computed over the
+        # same weeks as `perWeek` above, but from a different filter: the range
+        # bounds every other figure here applies to `date_applied` are applied
+        # to the week the work landed in. See server/effort.py.
+        "effort": score_per_week(
+            conn, range_from, range_to, target=settings["weeklyEffortTarget"]
+        ),
     }

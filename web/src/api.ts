@@ -18,6 +18,8 @@ import type {
   SheetsStatus,
   Stage,
   Suggestion,
+  EffortEntry,
+  EffortKind,
 } from "./types";
 import { todayIso } from "./lib/format";
 
@@ -42,6 +44,15 @@ export interface AnalyticsRange {
 // `dateField` chooses which of the log's two clocks the range filters on.
 // "recorded" (the default) answers "what did I hear this week"; "occurred"
 // answers "what is on the calendar next week" — over the very same rows.
+// Effort entries are filtered by the day the work happened — there is only one
+// clock here, unlike the activity log: an entry IS its date.
+export interface EffortFilters {
+  from?: string;
+  to?: string;
+  applicationId?: string;
+  limit?: number;
+}
+
 export interface ActivityFilters {
   dateField?: "recorded" | "occurred";
   from?: string;
@@ -69,6 +80,7 @@ const keys = {
   discovered: (status: DiscoveredStatus) => ["discovered", status] as const,
   activity: (f: ActivityFilters) =>
     ["activity", JSON.stringify(f)] as const,
+  effort: (f: EffortFilters) => ["effort", JSON.stringify(f)] as const,
 };
 
 // After any mutation we invalidate both the list and the analytics so the
@@ -83,6 +95,7 @@ function useInvalidateAll() {
     qc.invalidateQueries({ queryKey: keys.nextSteps });
     qc.invalidateQueries({ queryKey: ["discovered"] });
     qc.invalidateQueries({ queryKey: ["activity"] });
+    qc.invalidateQueries({ queryKey: ["effort"] });
   };
 }
 
@@ -121,6 +134,47 @@ export function useActivity(filters: ActivityFilters = {}) {
   return useQuery({
     queryKey: keys.activity(filters),
     queryFn: () => http<Activity[]>(`/api/activity${qs ? `?${qs}` : ""}`),
+  });
+}
+
+// The hand-logged half of the effort score. The score itself needs no hook of
+// its own — it rides along on /api/analytics, so a mutation here refreshes the
+// chart through the same invalidation everything else uses.
+export function useEffortEntries(filters: EffortFilters = {}) {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== "") params.set(k, String(v));
+  }
+  const qs = params.toString();
+  return useQuery({
+    queryKey: keys.effort(filters),
+    queryFn: () => http<EffortEntry[]>(`/api/effort${qs ? `?${qs}` : ""}`),
+  });
+}
+
+export function useCreateEffort() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: (input: {
+      kind: EffortKind;
+      occurredAt: string;
+      note?: string;
+      applicationId?: string;
+    }) =>
+      http<EffortEntry>("/api/effort", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteEffort() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: (id: string) =>
+      http<{ ok: true }>(`/api/effort/${id}`, { method: "DELETE" }),
+    onSuccess: invalidate,
   });
 }
 
@@ -202,6 +256,29 @@ export function useDeleteStageEvent() {
         method: "DELETE",
       }),
     onSuccess: invalidate,
+  });
+}
+
+// --- Context export ------------------------------------------------------
+
+// One application as Markdown, for pasting into an LLM.
+export function exportUrl(id: string, download = false): string {
+  return `/api/applications/${id}/export.md${download ? "?download=1" : ""}`;
+}
+
+// The same text, fetched ahead of the click. Copying has to happen synchronously
+// inside the tap — over plain http on the LAN there is no async Clipboard API,
+// only the legacy copy command, and that refuses once a fetch has been awaited.
+// Keyed under ["application"] so every edit's invalidation refreshes it too.
+export function useApplicationExport(id: string | undefined) {
+  return useQuery({
+    queryKey: ["application", id ?? "", "export"],
+    queryFn: async () => {
+      const res = await fetch(exportUrl(id!));
+      if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+      return res.text();
+    },
+    enabled: !!id,
   });
 }
 

@@ -15,11 +15,20 @@ import {
 import { useState } from "react";
 import { useAnalytics, useUpdateSettings, type AnalyticsRange } from "../api";
 import { SettingInput } from "../components/SettingInput";
-import { STAGE_COLORS, STAGE_LABELS, type Stage } from "../types";
+import {
+  EFFORT_CATEGORIES,
+  EFFORT_COLORS,
+  STAGE_COLORS,
+  STAGE_LABELS,
+  type EffortCategory,
+  type EffortWeek,
+  type Stage,
+} from "../types";
 import { fmtDate, pct, todayIso } from "../lib/format";
 import { ImportCard } from "../components/ImportCard";
 import { SheetsCard } from "../components/SheetsCard";
 import { Skeleton } from "../components/Skeleton";
+import { LogEffortCard } from "../components/LogEffortCard";
 
 // Themed tooltip so it isn't a white box in dark mode.
 const TOOLTIP_STYLE = {
@@ -38,6 +47,12 @@ const LEGEND_STYLE = { fontSize: 11, color: "var(--text-muted)" };
 // Grid and axes stay recessive so the marks carry the reading.
 const GRID_STROKE = "color-mix(in srgb, var(--border) 70%, transparent)";
 const TICK = { fontSize: 11, fill: "var(--text-muted)" };
+
+// Stack order, bottom to top. Object key order in the payload is the server's,
+// so the axis order is stated here once rather than inferred per render.
+const EFFORT_CATEGORY_KEYS = Object.keys(
+  EFFORT_CATEGORIES,
+) as EffortCategory[];
 
 const DIMENSIONS = [
   { key: "industry", label: "Industry" },
@@ -154,6 +169,7 @@ export default function Analytics() {
     perWeek,
     timeInStage,
     pace,
+    effort,
   } = data;
   const offerRate =
     totals.applications > 0 ? totals.offers / totals.applications : 0;
@@ -172,7 +188,7 @@ export default function Analytics() {
       </header>
 
       {/* KPI row */}
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
         <Kpi
           label="Applications"
           value={totals.applications}
@@ -211,6 +227,12 @@ export default function Analytics() {
           value={pct(screenRate)}
           sub={`screen ÷ ${screenBasis.matured} judged`}
           tip={`Applications that ever reached a screen ÷ the ones old enough to judge. An application counts once it has been answered, or once it has been out ${screenBasis.windowDays} days without a reply — expecting a callback on something you sent in yesterday would only make a productive week look like a bad one.`}
+        />
+        <Kpi
+          label="Effort this week"
+          value={effort.thisWeek}
+          sub={`goal ${effort.target} · 4-wk avg ${effort.last4Avg}`}
+          tip={`What this week has cost, in units where one application sent = 1: a screen is 2, a later round is 4, a logged prep session is 2. Unlike every other figure here it counts the week the work happened in, not applications by date applied — so a week of interviews and prep with nothing sent is still a full week.`}
         />
         <Kpi
           label="Offer rate"
@@ -390,6 +412,111 @@ export default function Analytics() {
           )}
         </section>
 
+        {/* Effort per week — what the week COST, next to what it produced.
+            Deliberately its own card rather than a second series on the chart
+            above: applications and effort are different units, and a week with
+            two final rounds and no applications is a good week on one and an
+            empty one on the other. */}
+        <section className="card p-5 lg:col-span-2">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Effort per week</h3>
+            <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+              <span
+                className="cursor-help"
+                title="Effort recorded this week vs. your goal · average of the previous 4 completed weeks"
+              >
+                This week{" "}
+                <span
+                  className={`font-semibold ${
+                    effort.thisWeek >= effort.target
+                      ? "text-[var(--success)]"
+                      : "text-[var(--text)]"
+                  }`}
+                >
+                  {effort.thisWeek}/{effort.target}
+                </span>
+                {" · "}4-wk avg {effort.last4Avg}
+              </span>
+              <label
+                className="flex items-center gap-1"
+                title="Weekly effort goal — drawn as the dashed line on the chart"
+              >
+                goal
+                <SettingInput
+                  value={effort.target}
+                  min={1}
+                  max={500}
+                  onSave={(n) => updateSettings.mutate({ weeklyEffortTarget: n })}
+                />
+              </label>
+            </div>
+          </div>
+          <p className="mb-3 text-xs text-[var(--text-muted)]">
+            What the week cost, not what it produced — one application sent = 1,
+            a screen 2, a later round 4. Weeks are counted by{" "}
+            <b>when the work happened</b>, so the date range above filters this
+            card differently from the rest of the page.
+          </p>
+          {effort.perWeek.length === 0 ? (
+            <Empty />
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart
+                data={effort.perWeek}
+                margin={{ left: -20, right: 8, top: 4 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+                <XAxis
+                  dataKey="weekStart"
+                  tickFormatter={(d) => fmtDate(d).replace(/,.*/, "")}
+                  tick={TICK}
+                />
+                <YAxis allowDecimals={false} tick={TICK} />
+                <Tooltip
+                  cursor={{ fill: "var(--surface-2)" }}
+                  content={<EffortTooltip />}
+                />
+                <Legend
+                  verticalAlign="top"
+                  align="left"
+                  height={28}
+                  iconType="circle"
+                  iconSize={8}
+                  wrapperStyle={LEGEND_STYLE}
+                />
+                <ReferenceLine
+                  y={effort.target}
+                  stroke="var(--text-muted)"
+                  strokeDasharray="4 4"
+                  label={{
+                    value: "goal",
+                    position: "insideTopRight",
+                    fontSize: 10,
+                    fill: "var(--text-muted)",
+                  }}
+                />
+                {EFFORT_CATEGORY_KEYS.map((c) => (
+                  <Bar
+                    key={c}
+                    dataKey={c}
+                    name={EFFORT_CATEGORIES[c]}
+                    stackId="effort"
+                    fill={EFFORT_COLORS[c]}
+                    // A hairline in the surface colour between segments, so a
+                    // stack of four reads as four and not as one gradient.
+                    // Square tops on purpose: rounding only the last segment
+                    // would change the silhouette week to week, depending on
+                    // which categories happened to be zero.
+                    stroke="var(--surface)"
+                    strokeWidth={1}
+                  />
+                ))}
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+          <LogEffortCard />
+        </section>
+
         {/* Time in stage */}
         <section className="card p-5">
           <h3 className="mb-1 text-sm font-semibold">
@@ -566,6 +693,45 @@ function Kpi({
       </div>
       {sub && (
         <div className="mt-1.5 text-[11px] text-[var(--text-muted)]">{sub}</div>
+      )}
+    </div>
+  );
+}
+
+// The default recharts tooltip would list four category totals, which is the
+// stack the reader can already see. What is worth showing is the receipt: which
+// specific things earned the points, so a week's total is auditable against
+// its parts rather than taken on faith.
+function EffortTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: { payload: EffortWeek }[];
+  label?: string;
+}) {
+  const week = active ? payload?.[0]?.payload : undefined;
+  if (!week) return null;
+  return (
+    <div style={{ ...TOOLTIP_STYLE, padding: "8px 10px" }}>
+      <div className="mb-1 font-medium">
+        Week of {fmtDate(label as string)} — {week.total}
+      </div>
+      {week.items.length === 0 ? (
+        <div className="text-[var(--text-muted)]">Nothing logged.</div>
+      ) : (
+        <table className="tabular">
+          <tbody>
+            {week.items.map((i) => (
+              <tr key={i.key}>
+                <td className="pr-2">{i.label}</td>
+                <td className="pr-2 text-[var(--text-muted)]">×{i.count}</td>
+                <td className="text-right font-medium">{i.points}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );

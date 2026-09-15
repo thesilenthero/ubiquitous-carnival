@@ -42,6 +42,7 @@ EXPORT_NAMES = {
     "interviews.csv": "job-interviews.csv",
     "interactions.csv": "job-interactions.csv",
     "activity.csv": "job-activity.csv",
+    "effort.csv": "job-effort.csv",
 }
 
 _warned_unreachable = False

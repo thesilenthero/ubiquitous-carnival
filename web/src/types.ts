@@ -195,6 +195,59 @@ export interface StageEvent {
   occurredAt: string;
 }
 
+// --- Effort ----------------------------------------------------------------
+// What a week COST, as opposed to what it produced. Every other figure on the
+// Analytics page measures an outcome, so two days spent preparing for a screen
+// read exactly like two days off. Weights are in units where one application
+// sent = 1. Mirrors server/domain.py.
+//
+// Kinds are the hand-logged half — work that writes to nothing else in the
+// tracker, and so cannot be derived at any weighting. Applications, stage
+// events and contact interactions are scored server-side from rows that
+// already exist; nothing here needs to restate them.
+export const EFFORT_KINDS = {
+  "interview-prep": { weight: 2, label: "Interview prep" },
+  "take-home": { weight: 4, label: "Take-home / assessment" },
+  "application-prep": { weight: 1, label: "Tailoring resume / letter" },
+  "skill-practice": { weight: 2, label: "Skill practice" },
+  research: { weight: 1, label: "Company / role research" },
+  networking: { weight: 0.5, label: "Networking event" },
+  other: { weight: 1, label: "Other" },
+} as const;
+export type EffortKind = keyof typeof EFFORT_KINDS;
+export const EFFORT_KIND_KEYS = Object.keys(EFFORT_KINDS) as EffortKind[];
+
+// The stacked segments of the weekly chart, in stack order.
+export const EFFORT_CATEGORIES = {
+  applications: "Applications",
+  interviews: "Interviews",
+  prep: "Prep & practice",
+  networking: "Networking",
+} as const;
+export type EffortCategory = keyof typeof EFFORT_CATEGORIES;
+
+export const EFFORT_COLORS: Record<EffortCategory, string> = {
+  applications: "var(--chart-1)",
+  interviews: "var(--chart-2)",
+  prep: "var(--chart-3)",
+  networking: "var(--chart-4)",
+};
+
+// One logged session. `applicationLabel` is null both when nothing was linked
+// and when the linked application has since been deleted — the entry outlives
+// it on purpose, because the hour was still spent.
+export interface EffortEntry {
+  id: string;
+  kind: EffortKind;
+  label: string;
+  weight: number;
+  occurredAt: string;
+  note: string | null;
+  applicationId: string | null;
+  applicationLabel: string | null;
+  createdAt: string;
+}
+
 // Imported for use in the Application interface below and re-exported so
 // consumers can pull the shape from either module. See lib/evaluation.ts.
 import type { Evaluation, VerdictKey } from "./lib/evaluation";
@@ -472,6 +525,7 @@ export interface Settings {
   staleDays: number; // Pipeline amber marker: early heads-up
   quietDays: number; // Follow-ups "Gone quiet": time-to-ghost nudge
   screenWindowDays: number; // Analytics: age before silence counts as no screen
+  weeklyEffortTarget: number; // Analytics: the goal line on the effort chart
 }
 
 // State of the Google Sheet mirror (server/sheets_sync.py). Not a setting —
@@ -488,6 +542,7 @@ export interface SheetsStatus {
 export const DEFAULT_STALE_DAYS = 14;
 export const DEFAULT_QUIET_DAYS = 30;
 export const DEFAULT_SCREEN_WINDOW_DAYS = 14;
+export const DEFAULT_WEEKLY_EFFORT_TARGET = 20;
 
 // Time-since-last-movement, shared by the table, the board and the follow-up
 // queue so all three agree on the number. Clamped at 0: an event dated later
@@ -535,6 +590,31 @@ export interface WeeklyPoint {
   count: number;
 }
 
+// One bar of the effort chart. The four category totals are the stack; `items`
+// is the same points broken down by what actually earned them, so a total is
+// always auditable against its parts in the tooltip.
+export type EffortWeek = {
+  weekStart: string;
+  total: number;
+  items: { key: string; label: string; count: number; points: number }[];
+} & Record<EffortCategory, number>;
+
+export interface EffortScore {
+  perWeek: EffortWeek[];
+  thisWeek: number;
+  weekStart: string;
+  last4Avg: number;
+  target: number;
+  // The weight table, shipped so the UI explains itself from the same numbers
+  // the score was computed with rather than a second copy that drifts.
+  weights: {
+    stages: Record<Stage, number>;
+    interaction: number;
+    kinds: Record<EffortKind, { weight: number; label: string; category: EffortCategory }>;
+  };
+  categories: Record<EffortCategory, string>;
+}
+
 export interface Analytics {
   totals: {
     applications: number;
@@ -571,4 +651,7 @@ export interface Analytics {
     weekStart: string;
     last4Avg: number;
   };
+  // Unlike everything above, the range bounds are applied to the week the work
+  // landed in rather than to `dateApplied`. See server/effort.py.
+  effort: EffortScore;
 }

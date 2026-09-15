@@ -60,6 +60,7 @@ SHEET_TABS = {
     "interviews.csv": "Interviews",
     "interactions.csv": "Interactions",
     "activity.csv": "Activity",
+    "effort.csv": "Effort",
 }
 
 # A push is two API calls against a 60-per-minute quota, so this is slack, not a

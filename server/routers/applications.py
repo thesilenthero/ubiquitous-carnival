@@ -4,11 +4,13 @@ Validation is hand-ported (not Pydantic models) so every check, error message,
 and status code matches the Express implementation exactly.
 """
 import sqlite3
+import urllib.parse
 
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
 from .. import attachment_files, repo
+from ..app_export import build_application_export
 from ..db import get_db
 from ..domain import (
     is_iso_date,
@@ -73,6 +75,39 @@ def get_application(app_id: str, conn: sqlite3.Connection = Depends(get_db)):
     if not app:
         return _err(404, "Not found")
     return app
+
+
+# One application as Markdown, to paste into an LLM as context. Served inline
+# so the Detail page's copy button can read it as text; ?download=1 makes it a
+# file instead. See server/app_export.py for what goes in and why.
+@router.get("/{app_id}/export.md")
+def export_application(
+    app_id: str, download: bool = False, conn: sqlite3.Connection = Depends(get_db)
+):
+    text = build_application_export(conn, app_id)
+    if text is None:
+        return _err(404, "Not found")
+    headers = {}
+    if download:
+        name = attachment_files._safe(
+            f"{_export_title(text)} context"
+        ) or "application-context"
+        # The ASCII filename is the fallback for clients that ignore filename*;
+        # company names routinely carry accents and em dashes.
+        ascii_name = (
+            " ".join(name.replace("—", "-").encode("ascii", "ignore").decode().split())
+            or "application-context"
+        )
+        headers["Content-Disposition"] = (
+            f'attachment; filename="{ascii_name}.md"; '
+            f"filename*=UTF-8''{urllib.parse.quote(name)}.md"
+        )
+    return Response(content=text, media_type="text/markdown; charset=utf-8", headers=headers)
+
+
+def _export_title(text: str) -> str:
+    """The export's own title line, minus the Markdown marker."""
+    return text.split("\n", 1)[0].lstrip("# ").strip()
 
 
 @router.post("")

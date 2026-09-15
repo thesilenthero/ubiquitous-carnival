@@ -12,7 +12,7 @@ route and the Drive mirror in csv_backup.py) iterate it, so the set can't drift.
 import sqlite3
 from typing import Callable
 
-from .domain import PRE_STAGES, STAGE_LABELS
+from .domain import EFFORT_KINDS, PRE_STAGES, STAGE_LABELS
 from .repo import get_application, list_applications
 
 EXPORT_COLUMNS = [
@@ -241,14 +241,56 @@ def export_activity_csv(conn: sqlite3.Connection) -> str:
     return _csv_text(ACTIVITY_COLUMNS, conn.execute(_ACTIVITY_SQL).fetchall())
 
 
+# Hand-logged effort: prep, take-homes, practice. The only part of the effort
+# score with no other home in the export — the rest of what it counts is
+# already in stage-events.csv and interactions.csv. `weight` is denormalized in
+# so the file can be totalled in a spreadsheet without the weight table.
+EFFORT_COLUMNS = [
+    "id",
+    "kind",
+    "label",
+    "weight",
+    "occurred_at",
+    "note",
+    "application_id",
+    "company",
+    "role_title",
+    "created_at",
+]
+
+# LEFT JOIN for the same reason interactions get one: prep for a role you have
+# not entered yet, or one you have since deleted, is still prep.
+_EFFORT_SQL = """
+    SELECT e.id, e.kind, e.occurred_at, e.note, e.application_id,
+           a.company, a.role_title, e.created_at
+      FROM effort_entries e
+      LEFT JOIN applications a ON a.id = e.application_id
+     ORDER BY e.occurred_at, e.created_at
+"""
+
+
+def export_effort_csv(conn: sqlite3.Connection) -> str:
+    rows = []
+    for r in conn.execute(_EFFORT_SQL):
+        spec = EFFORT_KINDS.get(r["kind"], {})
+        rows.append([
+            r["id"], r["kind"], spec.get("label", r["kind"]), spec.get("weight", 0),
+            r["occurred_at"], r["note"], r["application_id"],
+            r["company"], r["role_title"], r["created_at"],
+        ])
+    return _csv_text(EFFORT_COLUMNS, rows)
+
+
 # What "the export" is. Names are the entries inside the zip; csv_backup.py maps
-# them to its own job-*.csv filenames for the synced folder.
+# them to its own job-*.csv filenames for the synced folder, and sheets_sync.py
+# to its tab names — an entry added here needs an entry in both.
 EXPORT_FILES: dict[str, Callable[[sqlite3.Connection], str]] = {
     "applications.csv": export_csv,
     "stage-events.csv": export_stage_events_csv,
     "interviews.csv": export_interviews_csv,
     "interactions.csv": export_interactions_csv,
     "activity.csv": export_activity_csv,
+    "effort.csv": export_effort_csv,
 }
 
 
